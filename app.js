@@ -1,3 +1,21 @@
+// === 1. KHỞI TẠO FIREBASE ===
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
+import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAPoSYAdw5T4fpVyOg44hBHQjNQ74sr0RU",
+  authDomain: "quanlykho-eb445.firebaseapp.com",
+  databaseURL: "https://quanlykho-eb445-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "quanlykho-eb445",
+  storageBucket: "quanlykho-eb445.firebasestorage.app",
+  messagingSenderId: "284368709466",
+  appId: "1:284368709466:web:20bc45240af14136f13563"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+// =============================
+
 const STORAGE_KEY = "warehouse_scan_data_v1";
 const CANCELED_KEY = "warehouse_cancelled_orders_v1";
 
@@ -60,6 +78,25 @@ function init() {
   bindEvents();
   switchPage("scanPage");
   renderAll();
+  
+  // === 2. LẮNG NGHE DỮ LIỆU TỪ FIREBASE ĐỂ CẬP NHẬT TỰ ĐỘNG CHÉO CÁC MÁY ===
+  onValue(ref(db, STORAGE_KEY), (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      renderAll(); 
+    }
+  });
+
+  onValue(ref(db, CANCELED_KEY), (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      localStorage.setItem(CANCELED_KEY, JSON.stringify(data));
+      loadCancelledToTextarea();
+      loadCancelledCount();
+    }
+  });
+  // =========================================================================
 }
 
 function bindEvents() {
@@ -86,6 +123,7 @@ function bindEvents() {
 
   clearCancelledBtn.addEventListener("click", () => {
     localStorage.setItem(CANCELED_KEY, JSON.stringify([]));
+    set(ref(db, CANCELED_KEY), []); // Đồng bộ xóa đơn hủy lên Firebase
     loadCancelledToTextarea();
     showMessage("Đã xóa danh sách đơn hủy", "warning");
     playTone("warning");
@@ -147,7 +185,7 @@ function handleScan(code) {
 
   day.orders.push({ code, status, carrier, time: now });
   all[date] = day;
-  saveAllData(all);
+  saveAllData(all); // Lệnh này giờ đã được nâng cấp đẩy lên Firebase
   renderAll();
 }
 
@@ -358,8 +396,10 @@ function getAllData() {
   }
 }
 
+// === 3. NÂNG CẤP LƯU DỮ LIỆU CHÉO QUA FIREBASE ===
 function saveAllData(data) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  set(ref(db, STORAGE_KEY), data); // Bắn thẳng lịch sử quét lên Firebase
 }
 
 function getCancelledSet() {
@@ -376,7 +416,9 @@ function getCancelledSet() {
 function saveCancelledSet(list) {
   const unique = [...new Set(list)];
   localStorage.setItem(CANCELED_KEY, JSON.stringify(unique));
+  set(ref(db, CANCELED_KEY), unique); // Bắn thẳng đơn hủy lên Firebase
 }
+// =================================================
 
 function loadCancelledToTextarea() {
   const set = [...getCancelledSet()];
