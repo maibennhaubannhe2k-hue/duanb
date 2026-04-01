@@ -1,5 +1,13 @@
 const STORAGE_KEY = "warehouse_scan_data_v1";
 const CANCELED_KEY = "warehouse_cancelled_orders_v1";
+const FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: "",
+};
 
 const STATUS = {
   SUCCESS: "SUCCESS",
@@ -23,6 +31,11 @@ let selectedHistoryDate = null;
 let currentFilter = { mode: "single", singleDate: todayStr(), fromDate: "", toDate: "" };
 let carrierChart = null;
 let activePage = "scanPage";
+let db = null;
+let useCloud = false;
+let cloudCancelledSet = new Set();
+let currentDayUnsubscribe = null;
+let daysUnsubscribe = null;
 
 const orderInput = document.getElementById("orderInput");
 const scanMessage = document.getElementById("scanMessage");
@@ -54,11 +67,13 @@ const appPages = document.querySelectorAll(".app-page");
 
 init();
 
-function init() {
+async function init() {
   singleDate.value = todayStr();
   loadCancelledToTextarea();
   bindEvents();
   switchPage("scanPage");
+  initDataSource();
+  bindRealtimeListeners();
   renderAll();
 }
 
@@ -76,17 +91,17 @@ function bindEvents() {
     }
   });
 
-  saveCancelledBtn.addEventListener("click", () => {
+  saveCancelledBtn.addEventListener("click", async () => {
     const lines = normalizeCodes(cancelledInput.value);
-    saveCancelledSet(lines);
-    loadCancelledToTextarea();
+    await saveCancelledSet(lines);
+    await loadCancelledToTextarea();
     showMessage("Danh sách đơn hủy đã lưu", "warning");
     playTone("warning");
   });
 
-  clearCancelledBtn.addEventListener("click", () => {
-    localStorage.setItem(CANCELED_KEY, JSON.stringify([]));
-    loadCancelledToTextarea();
+  clearCancelledBtn.addEventListener("click", async () => {
+    await saveCancelledSet([]);
+    await loadCancelledToTextarea();
     showMessage("Đã xóa danh sách đơn hủy", "warning");
     playTone("warning");
   });
@@ -100,7 +115,7 @@ function bindEvents() {
     } else {
       currentFilter = { mode: "single", singleDate: s || todayStr(), fromDate: "", toDate: "" };
     }
-    renderAll();
+    void renderAll();
   });
 
   resetFilterBtn.addEventListener("click", () => {
@@ -108,34 +123,33 @@ function bindEvents() {
     fromDate.value = "";
     toDate.value = "";
     currentFilter = { mode: "single", singleDate: todayStr(), fromDate: "", toDate: "" };
-    renderAll();
+    void renderAll();
   });
 
-  exportSelectedDateBtn.addEventListener("click", () => {
+  exportSelectedDateBtn.addEventListener("click", async () => {
     if (!selectedHistoryDate) {
       alert("Vui lòng chọn ngày trong History.");
       return;
     }
-    const dayOrders = getDayOrders(selectedHistoryDate);
+    const dayOrders = await getDayOrders(selectedHistoryDate);
     exportOrdersToExcel(dayOrders, `orders_${selectedHistoryDate}.xlsx`);
   });
 }
 
-function handleScan(code) {
+async function handleScan(code) {
   if (!code) return;
   const date = todayStr();
   const now = new Date().toISOString();
   const carrier = detectCarrier(code);
-  const all = getAllData();
-  const canceledSet = getCancelledSet();
-  const day = all[date] || { date, orders: [] };
+  const canceledSet = await getCancelledSet();
+  const dayOrders = await getDayOrders(date);
 
   let status;
   if (canceledSet.has(code)) {
     status = STATUS.CANCELED;
     showMessage("❌ DON HUY - KHONG DUOC XU LY", "error");
     playTone("error");
-  } else if (day.orders.some((o) => o.code === code)) {
+  } else if (dayOrders.some((o) => o.code === code)) {
     status = STATUS.DUPLICATE;
     showMessage("⚠️ DA QUET TRUOC DO", "warning");
     playTone("warning");
@@ -145,10 +159,8 @@ function handleScan(code) {
     playTone("success");
   }
 
-  day.orders.push({ code, status, carrier, time: now });
-  all[date] = day;
-  saveAllData(all);
-  renderAll();
+  await addOrder(date, { code, status, carrier, time: now });
+  await renderAll();
 }
 
 function detectCarrier(code) {
@@ -159,18 +171,18 @@ function detectCarrier(code) {
   return "Khac";
 }
 
-function renderAll() {
-  const filteredOrders = getOrdersByFilter(currentFilter);
-  const todayOrders = getDayOrders(todayStr());
+async function renderAll() {
+  const filteredOrders = await getOrdersByFilter(currentFilter);
+  const todayOrders = await getDayOrders(todayStr());
 
   renderFilterInfo();
   renderMetrics(filteredOrders);
   renderCarrierTable(filteredOrders);
   renderChart(filteredOrders);
   renderTodayList(todayOrders);
-  renderHistoryDates();
-  renderHistoryDetails();
-  loadCancelledCount();
+  await renderHistoryDates();
+  await renderHistoryDetails();
+  await loadCancelledCount();
   if (activePage === "scanPage") {
     focusOrderInput();
   }
@@ -268,30 +280,30 @@ function renderTodayList(orders) {
 }
 
 function renderHistoryDates() {
-  const dates = Object.keys(getAllData()).sort((a, b) => (a > b ? -1 : 1));
+  const dates = await getAllDates();
   historyDates.innerHTML = "";
   dates.forEach((d) => {
     const li = document.createElement("li");
     const btn = document.createElement("button");
-    btn.textContent = `${d} (${getDayOrders(d).length} don)`;
+    btn.textContent = d;
     if (selectedHistoryDate === d) btn.classList.add("active");
     btn.addEventListener("click", () => {
       selectedHistoryDate = d;
-      renderHistoryDates();
-      renderHistoryDetails();
+      void renderHistoryDates();
+      void renderHistoryDetails();
     });
     li.appendChild(btn);
     historyDates.appendChild(li);
   });
 }
 
-function renderHistoryDetails() {
+async function renderHistoryDetails() {
   historyDetailBody.innerHTML = "";
   if (!selectedHistoryDate) {
     historyTitle.textContent = "Chua chon ngay";
     return;
   }
-  const orders = getDayOrders(selectedHistoryDate);
+  const orders = await getDayOrders(selectedHistoryDate);
   historyTitle.textContent = `Chi tiet ngay ${selectedHistoryDate}`;
   orders.forEach((o) => {
     const tr = document.createElement("tr");
@@ -331,21 +343,25 @@ function groupByCarrier(orders) {
   }, {});
 }
 
-function getOrdersByFilter(filter) {
-  const all = getAllData();
-  const dates = Object.keys(all);
+async function getOrdersByFilter(filter) {
+  const dates = await getAllDates();
   let selectedDates = [];
   if (filter.mode === "range" && filter.fromDate && filter.toDate) {
     selectedDates = dates.filter((d) => d >= filter.fromDate && d <= filter.toDate);
   } else {
     selectedDates = dates.filter((d) => d === filter.singleDate);
   }
-  return selectedDates.flatMap((d) => all[d].orders || []);
+  const grouped = await Promise.all(selectedDates.map((d) => getDayOrders(d)));
+  return grouped.flat();
 }
 
-function getDayOrders(date) {
-  const all = getAllData();
-  return all[date]?.orders || [];
+async function getDayOrders(date) {
+  if (!useCloud) {
+    const all = getAllData();
+    return all[date]?.orders || [];
+  }
+  const snap = await db.collection("days").doc(date).collection("orders").orderBy("time", "asc").get();
+  return snap.docs.map((doc) => doc.data());
 }
 
 function getAllData() {
@@ -362,30 +378,40 @@ function saveAllData(data) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-function getCancelledSet() {
-  const raw = localStorage.getItem(CANCELED_KEY);
-  if (!raw) return new Set();
-  try {
-    const arr = JSON.parse(raw);
-    return new Set(arr);
-  } catch (e) {
-    return new Set();
+async function getCancelledSet() {
+  if (!useCloud) {
+    const raw = localStorage.getItem(CANCELED_KEY);
+    if (!raw) return new Set();
+    try {
+      const arr = JSON.parse(raw);
+      return new Set(arr);
+    } catch (e) {
+      return new Set();
+    }
   }
+  return cloudCancelledSet;
 }
 
-function saveCancelledSet(list) {
+async function saveCancelledSet(list) {
   const unique = [...new Set(list)];
-  localStorage.setItem(CANCELED_KEY, JSON.stringify(unique));
+  if (!useCloud) {
+    localStorage.setItem(CANCELED_KEY, JSON.stringify(unique));
+    return;
+  }
+  await db.collection("configs").doc("cancelledOrders").set({
+    codes: unique,
+    updatedAt: new Date().toISOString(),
+  });
 }
 
-function loadCancelledToTextarea() {
-  const set = [...getCancelledSet()];
+async function loadCancelledToTextarea() {
+  const set = [...(await getCancelledSet())];
   cancelledInput.value = set.join("\n");
-  loadCancelledCount();
+  await loadCancelledCount();
 }
 
-function loadCancelledCount() {
-  cancelledCount.textContent = String(getCancelledSet().size);
+async function loadCancelledCount() {
+  cancelledCount.textContent = String((await getCancelledSet()).size);
 }
 
 function normalizeCodes(text) {
@@ -412,6 +438,56 @@ function formatTime(iso) {
 
 function focusOrderInput() {
   setTimeout(() => orderInput.focus(), 0);
+}
+
+function initDataSource() {
+  if (!window.firebase) return;
+  const hasConfig = FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId && FIREBASE_CONFIG.appId;
+  if (!hasConfig) return;
+  firebase.initializeApp(FIREBASE_CONFIG);
+  db = firebase.firestore();
+  useCloud = true;
+}
+
+function bindRealtimeListeners() {
+  if (!useCloud) return;
+  const today = todayStr();
+
+  currentDayUnsubscribe = db.collection("days").doc(today).collection("orders").onSnapshot(() => {
+    void renderAll();
+  });
+
+  daysUnsubscribe = db.collection("days").onSnapshot(() => {
+    void renderAll();
+  });
+
+  db.collection("configs").doc("cancelledOrders").onSnapshot((doc) => {
+    const data = doc.data() || {};
+    cloudCancelledSet = new Set(data.codes || []);
+    cancelledInput.value = [...cloudCancelledSet].join("\n");
+    cancelledCount.textContent = String(cloudCancelledSet.size);
+  });
+}
+
+async function addOrder(date, order) {
+  if (!useCloud) {
+    const all = getAllData();
+    const day = all[date] || { date, orders: [] };
+    day.orders.push(order);
+    all[date] = day;
+    saveAllData(all);
+    return;
+  }
+  await db.collection("days").doc(date).set({ date, updatedAt: new Date().toISOString() }, { merge: true });
+  await db.collection("days").doc(date).collection("orders").add(order);
+}
+
+async function getAllDates() {
+  if (!useCloud) {
+    return Object.keys(getAllData()).sort((a, b) => (a > b ? -1 : 1));
+  }
+  const snap = await db.collection("days").get();
+  return snap.docs.map((d) => d.id).sort((a, b) => (a > b ? -1 : 1));
 }
 
 function playTone(kind) {
