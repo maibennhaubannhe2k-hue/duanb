@@ -74,7 +74,13 @@ function bindEvents() {
   document.querySelectorAll(".page-tab").forEach((tab) => {
     tab.addEventListener("click", () => switchPage(tab.dataset.page));
   });
-
+// Lắng nghe ô chọn ngày ở Dashboard
+  const singleDateInput = document.getElementById("singleDate");
+  if (singleDateInput) {
+    singleDateInput.addEventListener("change", () => {
+      renderAll(); 
+    });
+  }
   orderInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -90,7 +96,32 @@ function bindEvents() {
     showMessage("Đã lưu danh sách đơn hủy", "warning");
     playTone("warning");
   });
-
+// 1. Nút Áp dụng bộ lọc (Từ ngày - Đến ngày)
+  const applyFilterBtn = document.getElementById("applyFilterBtn");
+  if (applyFilterBtn) {
+    applyFilterBtn.addEventListener("click", () => {
+      const f = document.getElementById("fromDate").value;
+      const t = document.getElementById("toDate").value;
+      if (f && t) {
+        currentFilter = { mode: "range", fromDate: f, toDate: t };
+        renderAll(); 
+      } else {
+        alert("Vui lòng chọn cả Từ ngày và Đến ngày!");
+      }
+    });
+  }
+  // 2. Nút Về hôm nay (Reset)
+  const resetFilterBtn = document.getElementById("resetFilterBtn");
+  if (resetFilterBtn) {
+    resetFilterBtn.addEventListener("click", () => {
+      const today = todayStr();
+      document.getElementById("singleDate").value = today; // Đưa ô lịch về hôm nay
+      document.getElementById("fromDate").value = ""; 
+      document.getElementById("toDate").value = "";   
+      currentFilter = { mode: "single", singleDate: today };
+      renderAll();
+    });
+  }
   // Sự kiện chọn ngày trong History
   if (historyDatePicker) {
     historyDatePicker.addEventListener("change", (e) => {
@@ -162,10 +193,14 @@ function handleScan(code) {
 
 // === 6. HIỂN THỊ GIAO DIỆN (RENDER) ===
 function renderAll() {
-  const allData = getAllData();
+  // 1. Luôn lấy ngày đang chọn từ ô lịch trên Dashboard
+  const selectedDate = document.getElementById("singleDate").value || todayStr();
+  currentFilter.singleDate = selectedDate;
+
+  // 2. Lấy dữ liệu đã lọc
   const filteredOrders = getOrdersByFilter(currentFilter);
   
-  // Dashboard Metrics
+  // 3. Hiển thị các con số lên Dashboard
   totalOrders.textContent = filteredOrders.length;
   validOrders.textContent = filteredOrders.filter(o => o.status === STATUS.SUCCESS).length;
   
@@ -175,22 +210,25 @@ function renderAll() {
   const dOrders = filteredOrders.filter(o => o.status === STATUS.DUPLICATE);
   duplicateOrders.textContent = dOrders.length;
 
-  // Bấm vào số lượng đơn hủy ở Dashboard
+  // 4. Sự kiện bấm vào số lượng Đơn Hủy
   cancelledOrders.parentElement.onclick = () => {
     switchPage("historyPage");
-    renderHistoryTable(cOrders, "Danh sách ĐƠN HỦY đang lọc");
+    renderHistoryTable(cOrders, `Danh sách ĐƠN HỦY ngày ${currentFilter.singleDate}`);
   };
   
-  // Bấm vào số lượng đơn trùng ở Dashboard
+  // 5. Sự kiện bấm vào số lượng Đơn Trùng
   duplicateOrders.parentElement.onclick = () => {
     switchPage("historyPage");
-    renderHistoryTable(dOrders, "Danh sách ĐƠN TRÙNG đang lọc");
+    renderHistoryTable(dOrders, `Danh sách ĐƠN TRÙNG ngày ${currentFilter.singleDate}`);
   };
 
+  // 6. Vẽ lại các bảng và biểu đồ
   renderCarrierTable(filteredOrders);
   renderChart(filteredOrders);
   renderTodayList(getDayOrders(todayStr()));
   loadCancelledCount();
+  
+  if (activePage === "scanPage") focusOrderInput();
 }
 
 function renderHistoryTable(orders, title) {
@@ -267,9 +305,21 @@ function groupByCarrier(orders) {
   }, {});
 }
 
-function getOrdersByFilter(f) {
+function getOrdersByFilter(filter) {
   const all = getAllData();
-  return (all[f.singleDate]?.orders || []);
+  const dates = Object.keys(all);
+  let selectedDates = [];
+
+  if (filter.mode === "range" && filter.fromDate && filter.toDate) {
+    // Lọc các ngày nằm trong khoảng từ - đến
+    selectedDates = dates.filter((d) => d >= filter.fromDate && d <= filter.toDate);
+  } else {
+    // Lọc đúng 1 ngày duy nhất
+    selectedDates = dates.filter((d) => d === filter.singleDate);
+  }
+
+  // Gộp tất cả đơn của các ngày đã lọc được thành 1 danh sách duy nhất
+  return selectedDates.flatMap((d) => all[d].orders || []);
 }
 
 function getDayOrders(date) { return getAllData()[date]?.orders || []; }
