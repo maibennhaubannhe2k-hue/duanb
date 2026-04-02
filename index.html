@@ -127,11 +127,17 @@ G12345678"></textarea>
     <section id="historyPage" class="app-page">
       <section class="card history-card">
         <h2>6) History</h2>
-        <div class="history-layout">
-          <div class="history-left">
-            <h3>Lịch sử theo ngày</h3>
-            <ul id="historyDates" class="history-dates"></ul>
+        <div class="history-controls card" style="display: flex; gap: 15px; margin-bottom: 20px; background: #fff0ed; padding: 15px; border-radius: 12px;">
+          <div style="flex: 1;">
+              <label style="font-weight: bold; color: #ee4d2d;">📅 Chọn ngày xem:</label>
+              <input id="historyDatePicker" type="date" style="margin-top: 5px;">
           </div>
+          <div style="flex: 2;">
+              <label style="font-weight: bold; color: #ee4d2d;">🔍 Tìm mã vận đơn (Kính lúp):</label>
+              <input id="historySearchInput" type="text" placeholder="Dán mã hoặc một phần mã để tìm..." style="margin-top: 5px;">
+          </div>
+      </div>
+      <div class="history-layout" style="display: block;">
           <div class="history-right">
             <div class="history-actions">
               <h3 id="historyTitle">Chưa chọn ngày</h3>
