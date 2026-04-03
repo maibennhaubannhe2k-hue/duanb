@@ -158,7 +158,6 @@ function bindEvents() {
   };
 }
 
-// === 5. XỬ LÝ QUÉT MÃ (MAIN LOGIC) ===
 function handleScan(code) {
   if (!code) return;
   const date = todayStr();
@@ -166,23 +165,38 @@ function handleScan(code) {
   const carrier = detectCarrier(code);
   const all = getAllData();
   const canceledSet = getCancelledSet();
-  const day = all[date] || { date, orders: [] };
+  
+  // --- LOGIC KIỂM TRA TRÙNG TRONG 5 NGÀY ---
+  const last5Days = [];
+  for (let i = 0; i < 5; i++) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    last5Days.push(d.toISOString().slice(0, 10)); // Lấy danh sách 5 ngày gần đây
+  }
 
+  // Kiểm tra xem mã này đã từng quét THÀNH CÔNG trong 5 ngày qua chưa
+  const isDuplicateIn5Days = last5Days.some(dStr => {
+    const dayData = all[dStr];
+    return dayData && dayData.orders.some(o => o.code === code && o.status === STATUS.SUCCESS);
+  });
+
+  const day = all[date] || { date, orders: [] };
   let status;
+
   if (canceledSet.has(code)) {
     status = STATUS.CANCELED;
-    showMessage("❌ ĐƠN HỦY - KHÔNG ĐÓNG GÓI", "error");
+    showMessage("❌ ĐƠN HỦY - DỪNG LẠI", "error");
     playTone("error");
-    setTimeout(() => speak("Đơn hủy"), 400); 
-  } else if (day.orders.some((o) => o.code === code)) {
+    setTimeout(() => speak("Đơn hủy"), 400);
+  } else if (isDuplicateIn5Days) {
     status = STATUS.DUPLICATE;
-    showMessage("⚠️ ĐƠN NÀY ĐÃ QUÉT RỒI", "warning");
+    showMessage("⚠️ TRÙNG ĐƠN (Trong 5 ngày qua)", "warning");
     playTone("warning");
     setTimeout(() => speak("Đơn trùng"), 400);
   } else {
     status = STATUS.SUCCESS;
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
-    playTone("success"); // Chỉ kêu "Ting"
+    playTone("success");
   }
 
   day.orders.push({ code, status, carrier, time: now });
