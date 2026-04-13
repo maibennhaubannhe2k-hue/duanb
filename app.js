@@ -1,17 +1,18 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, onValue } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+// [THAY ĐỔI 1]: Thêm chữ get vào danh sách import
+import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyAPoSYAdw5T4fpVyOg44hBHQjNQ74sr0RU",
-  authDomain: "quanlykho-eb445.firebaseapp.com",
-  databaseURL: "https://quanlykho-eb445-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "quanlykho-eb445",
-  storageBucket: "quanlykho-eb445.firebasestorage.app",
-  messagingSenderId: "284368709466",
-  appId: "1:284368709466:web:20bc45240af14136f13563"
+  apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
+  authDomain: "quanlykho1-b89e1.firebaseapp.com",
+  projectId: "quanlykho1-b89e1",
+  storageBucket: "quanlykho1-b89e1.firebasestorage.app",
+  messagingSenderId: "522347757177",
+  appId: "1:522347757177:web:69b51d3332f7141264dea8",
+  measurementId: "G-VTM2YPZCB4", // <--- PHẢI CÓ DẤU PHẨY Ở ĐÂY NHÉ
+  databaseURL: "https://quanlykho1-b89e1-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
-
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 
@@ -44,22 +45,26 @@ const historySearchInput = document.getElementById("historySearchInput");
 // === 3. KHỞI CHẠY HỆ THỐNG ===
 init();
 
-function init() {
+// [THAY ĐỔI 2]: Sửa hàm init() sang dùng async/await và đổi onValue thành get
+async function init() {
   document.getElementById("singleDate").value = todayStr();
   loadCancelledToTextarea();
   bindEvents();
   switchPage("scanPage");
-  renderAll();
   
-  // Đồng bộ Firebase
-  onValue(ref(db, STORAGE_KEY), (snapshot) => {
-    const data = snapshot.val();
-    if (data) {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-      renderAll(); 
+  // Đồng bộ Firebase (Tối ưu: Chỉ tải 1 lần khi mở web bằng get, không dùng onValue để tránh tốn băng thông)
+  try {
+    const snapshot = await get(ref(db, STORAGE_KEY));
+    if (snapshot.exists()) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot.val()));
     }
-  });
+  } catch (error) {
+    console.error("Lỗi tải dữ liệu:", error);
+  }
+  
+  renderAll(); 
 
+  // Đơn hủy (Dữ liệu nhẹ nên giữ nguyên onValue để cập nhật realtime)
   onValue(ref(db, CANCELED_KEY), (snapshot) => {
     const data = snapshot.val();
     if (data) {
@@ -74,13 +79,15 @@ function bindEvents() {
   document.querySelectorAll(".page-tab").forEach((tab) => {
     tab.addEventListener("click", () => switchPage(tab.dataset.page));
   });
-// Lắng nghe ô chọn ngày ở Dashboard
+
+  // Lắng nghe ô chọn ngày ở Dashboard
   const singleDateInput = document.getElementById("singleDate");
   if (singleDateInput) {
     singleDateInput.addEventListener("change", () => {
       renderAll(); 
     });
   }
+
   orderInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -96,7 +103,8 @@ function bindEvents() {
     showMessage("Đã lưu danh sách đơn hủy", "warning");
     playTone("warning");
   });
-// 1. Nút Áp dụng bộ lọc (Từ ngày - Đến ngày)
+
+  // 1. Nút Áp dụng bộ lọc (Từ ngày - Đến ngày)
   const applyFilterBtn = document.getElementById("applyFilterBtn");
   if (applyFilterBtn) {
     applyFilterBtn.addEventListener("click", () => {
@@ -110,6 +118,7 @@ function bindEvents() {
       }
     });
   }
+
   // 2. Nút Về hôm nay (Reset)
   const resetFilterBtn = document.getElementById("resetFilterBtn");
   if (resetFilterBtn) {
@@ -122,6 +131,7 @@ function bindEvents() {
       renderAll();
     });
   }
+
   // Sự kiện chọn ngày trong History
   if (historyDatePicker) {
     historyDatePicker.addEventListener("change", (e) => {
@@ -338,7 +348,19 @@ function getOrdersByFilter(filter) {
 
 function getDayOrders(date) { return getAllData()[date]?.orders || []; }
 function getAllData() { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
-function saveAllData(data) { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); set(ref(db, STORAGE_KEY), data); }
+
+// [THAY ĐỔI 3]: Cập nhật hàm saveAllData để chỉ ghi đè ngày hôm nay lên Firebase
+function saveAllData(all) { 
+  // 1. Vẫn lưu toàn bộ các ngày vào LocalStorage để tính năng lọc trùng 5 ngày, biểu đồ hoạt động bình thường
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(all)); 
+
+  // 2. Tối ưu: CHỈ đẩy lên Firebase dữ liệu của ngày hôm nay để tiết kiệm 99% băng thông
+  const today = todayStr();
+  if (all[today]) {
+    set(ref(db, `${STORAGE_KEY}/${today}`), all[today]);
+  }
+}
+
 function getCancelledSet() { return new Set(JSON.parse(localStorage.getItem(CANCELED_KEY)) || []); }
 function saveCancelledSet(list) { const unique = [...new Set(list)]; localStorage.setItem(CANCELED_KEY, JSON.stringify(unique)); set(ref(db, CANCELED_KEY), unique); }
 function loadCancelledToTextarea() { cancelledInput.value = [...getCancelledSet()].join("\n"); loadCancelledCount(); }
