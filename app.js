@@ -1,6 +1,5 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-// [THAY ĐỔI 1]: Thêm chữ get vào danh sách import
 import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
@@ -10,7 +9,7 @@ const firebaseConfig = {
   storageBucket: "quanlykho1-b89e1.firebasestorage.app",
   messagingSenderId: "522347757177",
   appId: "1:522347757177:web:69b51d3332f7141264dea8",
-  measurementId: "G-VTM2YPZCB4", // <--- PHẢI CÓ DẤU PHẨY Ở ĐÂY NHÉ
+  measurementId: "G-VTM2YPZCB4",
   databaseURL: "https://quanlykho1-b89e1-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 const app = initializeApp(firebaseConfig);
@@ -19,6 +18,8 @@ const db = getDatabase(app);
 // === 2. CẤU HÌNH BIẾN TOÀN CỤC ===
 const STORAGE_KEY = "warehouse_scan_data_v1";
 const CANCELED_KEY = "warehouse_cancelled_orders_v1";
+const BATCH_KEY = "warehouse_active_batches_v1"; // Xe đang mở
+const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1"; // Lịch sử xe đã chốt
 
 const STATUS = { SUCCESS: "SUCCESS", DUPLICATE: "DUPLICATE", CANCELED: "CANCELED" };
 const statusLabel = { [STATUS.SUCCESS]: "THÀNH CÔNG", [STATUS.DUPLICATE]: "ĐƠN TRÙNG", [STATUS.CANCELED]: "ĐƠN HỦY" };
@@ -27,6 +28,9 @@ const statusClass = { [STATUS.SUCCESS]: "row-success", [STATUS.DUPLICATE]: "row-
 let currentFilter = { mode: "single", singleDate: todayStr() };
 let carrierChart = null;
 let activePage = "scanPage";
+
+let activeBatches = JSON.parse(localStorage.getItem(BATCH_KEY)) || {};
+let closedBatches = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY)) || [];
 
 // DOM Elements
 const orderInput = document.getElementById("orderInput");
@@ -45,14 +49,13 @@ const historySearchInput = document.getElementById("historySearchInput");
 // === 3. KHỞI CHẠY HỆ THỐNG ===
 init();
 
-// [THAY ĐỔI 2]: Sửa hàm init() sang dùng async/await và đổi onValue thành get
 async function init() {
   document.getElementById("singleDate").value = todayStr();
   loadCancelledToTextarea();
   bindEvents();
   switchPage("scanPage");
   
-  // Đồng bộ Firebase (Tối ưu: Chỉ tải 1 lần khi mở web bằng get, không dùng onValue để tránh tốn băng thông)
+  // Đồng bộ Firebase (Dữ liệu quét chính - Chỉ tải 1 lần bằng GET)
   try {
     const snapshot = await get(ref(db, STORAGE_KEY));
     if (snapshot.exists()) {
@@ -63,8 +66,9 @@ async function init() {
   }
   
   renderAll(); 
+  renderBatches();
 
-  // Đơn hủy (Dữ liệu nhẹ nên giữ nguyên onValue để cập nhật realtime)
+  // Đồng bộ Firebase Realtime: Đơn hủy
   onValue(ref(db, CANCELED_KEY), (snapshot) => {
     const data = snapshot.val();
     if (data) {
@@ -72,20 +76,43 @@ async function init() {
       loadCancelledToTextarea();
     }
   });
+
+  // Đồng bộ Firebase Realtime: Lịch sử xe chốt
+  onValue(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
+    const data = snapshot.val();
+    if (data) {
+      closedBatches = data;
+      localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(data));
+    }
+  });
 }
 
-// === 4. XỬ LÝ SỰ KIỆN (EVENTS) ===
+// === 4. XỬ LÝ SỰ KIỆN ===
 function bindEvents() {
   document.querySelectorAll(".page-tab").forEach((tab) => {
     tab.addEventListener("click", () => switchPage(tab.dataset.page));
   });
 
-  // Lắng nghe ô chọn ngày ở Dashboard
+  // Sự kiện tạo xe mới (Kỷ luật thép)
+  const createBatchBtn = document.getElementById("createBatchBtn");
+  if (createBatchBtn) {
+    createBatchBtn.addEventListener("click", () => {
+      const carrier = document.getElementById("batchCarrier").value;
+      const name = document.getElementById("batchName").value.trim();
+      
+      if (!name) return alert("Vui lòng nhập tên xe/lô!");
+      if (activeBatches[carrier]) return alert(`Đang có xe [${activeBatches[carrier].id}] mở cho [${carrier}] rồi! Vui lòng CHỐT XE trước khi tạo mới.`);
+
+      activeBatches[carrier] = { id: name, count: 0 };
+      localStorage.setItem(BATCH_KEY, JSON.stringify(activeBatches));
+      renderBatches();
+      document.getElementById("batchName").value = ""; 
+    });
+  }
+
   const singleDateInput = document.getElementById("singleDate");
   if (singleDateInput) {
-    singleDateInput.addEventListener("change", () => {
-      renderAll(); 
-    });
+    singleDateInput.addEventListener("change", () => { renderAll(); });
   }
 
   orderInput.addEventListener("keydown", (e) => {
@@ -104,7 +131,18 @@ function bindEvents() {
     playTone("warning");
   });
 
-  // 1. Nút Áp dụng bộ lọc (Từ ngày - Đến ngày)
+  // Xóa danh sách đơn hủy
+  const clearCancelledBtn = document.getElementById("clearCancelledBtn");
+  if (clearCancelledBtn) {
+    clearCancelledBtn.addEventListener("click", () => {
+      if (confirm("⚠️ Bạn có chắc chắn muốn xóa TOÀN BỘ danh sách đơn hủy không?")) {
+        cancelledInput.value = "";
+        saveCancelledSet([]);
+        showMessage("Đã xóa sạch danh sách đơn hủy", "success");
+      }
+    });
+  }
+
   const applyFilterBtn = document.getElementById("applyFilterBtn");
   if (applyFilterBtn) {
     applyFilterBtn.addEventListener("click", () => {
@@ -119,12 +157,11 @@ function bindEvents() {
     });
   }
 
-  // 2. Nút Về hôm nay (Reset)
   const resetFilterBtn = document.getElementById("resetFilterBtn");
   if (resetFilterBtn) {
     resetFilterBtn.addEventListener("click", () => {
       const today = todayStr();
-      document.getElementById("singleDate").value = today; // Đưa ô lịch về hôm nay
+      document.getElementById("singleDate").value = today; 
       document.getElementById("fromDate").value = ""; 
       document.getElementById("toDate").value = "";   
       currentFilter = { mode: "single", singleDate: today };
@@ -132,16 +169,15 @@ function bindEvents() {
     });
   }
 
-  // Sự kiện chọn ngày trong History
   if (historyDatePicker) {
     historyDatePicker.addEventListener("change", (e) => {
         const date = e.target.value;
         const orders = getDayOrders(date);
         renderHistoryTable(orders, `Lịch sử ngày ${date}`);
+        renderClosedBatches(date); // Gọi thêm hàm vẽ lịch sử xe
     });
   }
 
-  // Sự kiện Kính lúp (Tìm kiếm)
   if (historySearchInput) {
     historySearchInput.addEventListener("input", (e) => {
         const term = e.target.value.toLowerCase().trim();
@@ -157,17 +193,17 @@ function bindEvents() {
     });
   }
 
-  // Xuất Excel từ bảng đang hiển thị
   document.getElementById("exportSelectedDateBtn").onclick = () => {
     const rows = [];
     document.querySelectorAll("#historyDetailBody tr").forEach(tr => {
         const tds = tr.querySelectorAll("td");
         if(tds.length > 0) rows.push({ "Thời gian": tds[0].innerText, "Mã đơn": tds[1].innerText, "DVVC": tds[2].innerText, "Trạng thái": tds[3].innerText });
     });
-    exportOrdersToExcel(rows, "bao_cao_kho.xlsx");
+    exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
 }
 
+// === 5. XỬ LÝ QUÉT MÃ (MAIN LOGIC) ===
 function handleScan(code) {
   if (!code) return;
   const date = todayStr();
@@ -176,15 +212,22 @@ function handleScan(code) {
   const all = getAllData();
   const canceledSet = getCancelledSet();
   
-  // --- LOGIC KIỂM TRA TRÙNG TRONG 5 NGÀY ---
+  // KIỂM TRA: Đã tạo xe cho DVVC này chưa?
+  if (!activeBatches[carrier] && !canceledSet.has(code)) {
+    showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error");
+    playTone("error");
+    setTimeout(() => speak(`Chưa tạo xe ${carrier}`), 400);
+    return; // Dừng lại, không ghi nhận đơn
+  }
+
+  // LOGIC KIỂM TRA TRÙNG TRONG 5 NGÀY
   const last5Days = [];
   for (let i = 0; i < 5; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    last5Days.push(d.toISOString().slice(0, 10)); // Lấy danh sách 5 ngày gần đây
+    last5Days.push(d.toISOString().slice(0, 10));
   }
 
-  // Kiểm tra xem mã này đã từng quét THÀNH CÔNG trong 5 ngày qua chưa
   const isDuplicateIn5Days = last5Days.some(dStr => {
     const dayData = all[dStr];
     return dayData && dayData.orders.some(o => o.code === code && o.status === STATUS.SUCCESS);
@@ -205,11 +248,16 @@ function handleScan(code) {
     setTimeout(() => speak("Đơn trùng"), 400);
   } else {
     status = STATUS.SUCCESS;
+    activeBatches[carrier].count++; // Tăng số lượng đơn của xe đó
+    localStorage.setItem(BATCH_KEY, JSON.stringify(activeBatches));
+    renderBatches(); 
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
     playTone("success");
   }
 
-  day.orders.push({ code, status, carrier, time: now });
+  const currentBatchId = activeBatches[carrier] ? activeBatches[carrier].id : "";
+  day.orders.push({ code, status, carrier, time: now, batchId: currentBatchId });
+  
   all[date] = day;
   saveAllData(all);
   renderAll();
@@ -217,14 +265,11 @@ function handleScan(code) {
 
 // === 6. HIỂN THỊ GIAO DIỆN (RENDER) ===
 function renderAll() {
-  // 1. Luôn lấy ngày đang chọn từ ô lịch trên Dashboard
   const selectedDate = document.getElementById("singleDate").value || todayStr();
   currentFilter.singleDate = selectedDate;
 
-  // 2. Lấy dữ liệu đã lọc
   const filteredOrders = getOrdersByFilter(currentFilter);
   
-  // 3. Hiển thị các con số lên Dashboard
   totalOrders.textContent = filteredOrders.length;
   validOrders.textContent = filteredOrders.filter(o => o.status === STATUS.SUCCESS).length;
   
@@ -234,19 +279,16 @@ function renderAll() {
   const dOrders = filteredOrders.filter(o => o.status === STATUS.DUPLICATE);
   duplicateOrders.textContent = dOrders.length;
 
-  // 4. Sự kiện bấm vào số lượng Đơn Hủy
   cancelledOrders.parentElement.onclick = () => {
     switchPage("historyPage");
     renderHistoryTable(cOrders, `Danh sách ĐƠN HỦY ngày ${currentFilter.singleDate}`);
   };
   
-  // 5. Sự kiện bấm vào số lượng Đơn Trùng
   duplicateOrders.parentElement.onclick = () => {
     switchPage("historyPage");
     renderHistoryTable(dOrders, `Danh sách ĐƠN TRÙNG ngày ${currentFilter.singleDate}`);
   };
 
-  // 6. Vẽ lại các bảng và biểu đồ
   renderCarrierTable(filteredOrders);
   renderChart(filteredOrders);
   renderTodayList(getDayOrders(todayStr()));
@@ -255,12 +297,108 @@ function renderAll() {
   if (activePage === "scanPage") focusOrderInput();
 }
 
+// --- QUẢN LÝ XE ĐANG MỞ ---
+function renderBatches() {
+  const body = document.getElementById("activeBatchesBody");
+  if (!body) return;
+  body.innerHTML = "";
+  
+  const carriers = Object.keys(activeBatches);
+  if (carriers.length === 0) {
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center;">Chưa có xe nào đang mở</td></tr>`;
+    return;
+  }
+
+  carriers.forEach(carrier => {
+    const batch = activeBatches[carrier];
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong>${carrier}</strong></td>
+      <td style="color: blue; font-weight: bold;">${batch.id}</td>
+      <td style="font-size: 18px; color: #e11d48; font-weight: bold;">${batch.count}</td>
+      <td><button onclick="closeBatch('${carrier}')" style="background: #10b981; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;">✅ Chốt Xe</button></td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+// --- XỬ LÝ CHỐT XE (Vào lịch sử) ---
+window.closeBatch = function(carrier) {
+  const batchId = activeBatches[carrier].id;
+  const count = activeBatches[carrier].count;
+  
+  if (!confirm(`Bạn có chắc chắn muốn CHỐT xe [${batchId}] của [${carrier}] không? \n(Xe sẽ được lưu vào mục History)`)) return;
+
+  closedBatches.push({ id: batchId, carrier: carrier, count: count, date: todayStr() });
+  localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+  set(ref(db, CLOSED_BATCH_KEY), closedBatches); // Đồng bộ Firebase
+
+  delete activeBatches[carrier];
+  localStorage.setItem(BATCH_KEY, JSON.stringify(activeBatches));
+  
+  renderBatches(); 
+  focusOrderInput();
+
+  const historyDate = document.getElementById("historyDatePicker");
+  if (historyDate && historyDate.value === todayStr()) {
+     renderClosedBatches(todayStr());
+  }
+}
+
+// --- HÀM VẼ BẢNG LỊCH SỬ XE ---
+function renderClosedBatches(dateStr) {
+  const body = document.getElementById("closedBatchesBody");
+  if (!body) return;
+  
+  const batchesForDate = closedBatches.filter(b => b.date === dateStr);
+  body.innerHTML = "";
+  
+  if (batchesForDate.length === 0) {
+    body.innerHTML = `<tr><td colspan="4" style="text-align:center;">Không có xe nào được chốt trong ngày này</td></tr>`;
+    return;
+  }
+
+  [...batchesForDate].reverse().forEach(b => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><strong>${b.carrier}</strong></td>
+      <td style="color: blue; font-weight: bold;">${b.id}</td>
+      <td style="font-size: 16px; font-weight: bold; color: #10b981;">${b.count}</td>
+      <td><button onclick="downloadBatch('${b.id}', '${b.carrier}', '${b.date}')" style="background: #3b82f6; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;">📥 Tải File Xe Này</button></td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+// --- HÀM TẢI FILE EXCEL CHO 1 XE CỤ THỂ ---
+// --- HÀM TẢI FILE EXCEL CHO 1 XE CỤ THỂ ---
+window.downloadBatch = function(batchId, carrier, dateStr) {
+  const allOrders = getAllData()[dateStr]?.orders || [];
+  
+  // [ĐÃ SỬA]: Thêm điều kiện bắt buộc phải đúng tên DVVC (o.carrier === carrier)
+  const batchOrders = allOrders.filter(o => 
+    o.batchId === batchId && 
+    o.carrier === carrier && 
+    o.status === STATUS.SUCCESS
+  );
+
+  if (batchOrders.length > 0) {
+    const rows = batchOrders.map(o => ({ 
+      "Lô/Xe": o.batchId, 
+      "Thời gian": formatTime(o.time), 
+      "Mã đơn": o.code, 
+      "DVVC": o.carrier 
+    }));
+    exportOrdersToExcel(rows, `BanGiao_${carrier}_${batchId}_${dateStr}.xlsx`);
+  } else {
+    alert("Lỗi: Không tìm thấy dữ liệu đơn hàng cho xe này!");
+  }
+}
+
 function renderHistoryTable(orders, title) {
   historyDetailBody.innerHTML = "";
   const displayOrders = [...orders].reverse();
-  
   historyTitle.innerHTML = `${title} <br> <span style="color: #ee4d2d; font-size: 20px; font-weight: bold;">📊 TỔNG CỘNG: ${orders.length} ĐƠN</span>`;
-
   displayOrders.forEach((o) => {
       const tr = document.createElement("tr");
       tr.className = statusClass[o.status];
@@ -286,19 +424,12 @@ function renderChart(orders) {
   if (carrierChart) carrierChart.destroy();
   carrierChart = new Chart(ctx, {
     type: "bar",
-    data: {
-      labels,
-      datasets: [{
-        label: "Số lượng",
-        data,
-        backgroundColor: ["#22c55e", "#3b82f6", "#f59e0b", "#8b5cf6", "#64748b", "#ef4444", "#eab308"],
-      }],
-    },
+    data: { labels, datasets: [{ label: "Số lượng", data, backgroundColor: ["#22c55e", "#3b82f6", "#f59e0b", "#8b5cf6", "#64748b", "#ef4444", "#eab308"] }] },
     options: { responsive: true, plugins: { legend: { display: false } } }
   });
 }
 
-// === CÁC HÀM HỖ TRỢ (HELPERS) ===
+// === CÁC HÀM HỖ TRỢ ===
 function detectCarrier(code) {
   if (code.startsWith("8")) return "J&T";
   if (code.startsWith("SPX")) return "Shopee Express";
@@ -335,26 +466,19 @@ function getOrdersByFilter(filter) {
   let selectedDates = [];
 
   if (filter.mode === "range" && filter.fromDate && filter.toDate) {
-    // Lọc các ngày nằm trong khoảng từ - đến
     selectedDates = dates.filter((d) => d >= filter.fromDate && d <= filter.toDate);
   } else {
-    // Lọc đúng 1 ngày duy nhất
     selectedDates = dates.filter((d) => d === filter.singleDate);
   }
-
-  // Gộp tất cả đơn của các ngày đã lọc được thành 1 danh sách duy nhất
   return selectedDates.flatMap((d) => all[d].orders || []);
 }
 
 function getDayOrders(date) { return getAllData()[date]?.orders || []; }
 function getAllData() { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }
 
-// [THAY ĐỔI 3]: Cập nhật hàm saveAllData để chỉ ghi đè ngày hôm nay lên Firebase
 function saveAllData(all) { 
-  // 1. Vẫn lưu toàn bộ các ngày vào LocalStorage để tính năng lọc trùng 5 ngày, biểu đồ hoạt động bình thường
   localStorage.setItem(STORAGE_KEY, JSON.stringify(all)); 
-
-  // 2. Tối ưu: CHỈ đẩy lên Firebase dữ liệu của ngày hôm nay để tiết kiệm 99% băng thông
+  // Tối ưu Firebase: Chỉ set ngày hôm nay để tiết kiệm băng thông
   const today = todayStr();
   if (all[today]) {
     set(ref(db, `${STORAGE_KEY}/${today}`), all[today]);
@@ -373,11 +497,11 @@ function focusOrderInput() { setTimeout(() => orderInput.focus(), 0); }
 
 function playTone(kind) {
   const audioUrls = {
-    success: "", // Tiếng Ting
+    success: "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3", 
     warning: "https://assets.mixkit.co/active_storage/sfx/950/950-preview.mp3", 
     error: "https://assets.mixkit.co/active_storage/sfx/997/997-preview.mp3" 
   };
-  new Audio(audioUrls[kind]).play().catch(() => {});
+  if(audioUrls[kind]) new Audio(audioUrls[kind]).play().catch(() => {});
 }
 
 function speak(text) {
@@ -397,15 +521,14 @@ function renderCarrierTable(orders) {
   carriers.forEach(c => {
     const list = map[c] || [];
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${c}</td><td>${list.length}</td><td><button onclick="exportOrdersToExcel([], 'temp.xlsx')" class="export-carrier-btn" data-carrier="${c}">Tải đơn</button></td>`;
+    tr.innerHTML = `<td>${c}</td><td>${list.length}</td><td><button onclick="exportOrdersToExcel([], 'temp.xlsx')" class="export-carrier-btn" data-carrier="${c}">Tải đơn tổng</button></td>`;
     body.appendChild(tr);
   });
-  // Gán lại sự kiện tải đơn cho từng nhà vận chuyển
   body.querySelectorAll(".export-carrier-btn").forEach(btn => {
     btn.onclick = () => {
       const c = btn.dataset.carrier;
       const list = map[c] || [];
-      exportOrdersToExcel(list.map(o => ({ "Mã đơn": o.code, "Thời gian": formatTime(o.time) })), `don_${c}.xlsx`);
+      exportOrdersToExcel(list.map(o => ({ "Mã đơn": o.code, "Thời gian": formatTime(o.time) })), `don_tong_${c}.xlsx`);
     };
   });
 }

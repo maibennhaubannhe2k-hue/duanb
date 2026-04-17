@@ -29,7 +29,34 @@
         <p id="scanMessage" class="message">Sẵn sàng quét...</p>
       </section>
 
-      <section class="card scanned-list-card">
+      <section class="card batch-card" style="margin-top: 20px; border-left: 5px solid #3b82f6;">
+        <h2 style="color: #3b82f6; margin-top: 0;">🚚 Quản Lý Xe Bàn Giao</h2>
+        <div class="batch-controls" style="display: flex; gap: 10px; margin-bottom: 15px;">
+          <select id="batchCarrier" style="padding: 8px; border-radius: 6px;">
+            <option value="Shopee Express">Shopee Express</option>
+            <option value="J&T">J&T</option>
+            <option value="GHN">GHN</option>
+            <option value="Viettel Post">Viettel Post</option>
+            <option value="Khac">Khác</option>
+          </select>
+          <input type="text" id="batchName" placeholder="Tên xe (VD: SPX-Ca1)" style="flex: 1; padding: 8px; border-radius: 6px;">
+          <button id="createBatchBtn" style="background-color: #3b82f6; color: white; padding: 8px 15px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold;">+ Tạo Xe Mới</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>DVVC</th>
+              <th>Tên Lô/Xe</th>
+              <th>Số Đơn Hợp Lệ</th>
+              <th>Thao tác</th>
+            </tr>
+          </thead>
+          <tbody id="activeBatchesBody">
+            </tbody>
+        </table>
+      </section>
+
+      <section class="card scanned-list-card" style="margin-top: 20px;">
         <h2>2) Danh Sách Quét Hôm Nay</h2>
         <table>
           <thead>
@@ -118,7 +145,7 @@ SPX123456789
 G12345678"></textarea>
         <div class="actions">
           <button id="saveCancelledBtn">Lưu danh sách đơn hủy</button>
-          <button id="clearCancelledBtn" class="danger">Xóa danh sách đơn hủy</button>
+          <button id="clearCancelledBtn" class="danger" style="background: #ef4444; color: white;">Xóa danh sách đơn hủy</button>
         </div>
         <p class="muted">Tổng đơn hủy đang lưu: <span id="cancelledCount">0</span></p>
       </section>
@@ -136,11 +163,30 @@ G12345678"></textarea>
               <label style="font-weight: bold; color: #ee4d2d;">🔍 Tìm mã vận đơn (Kính lúp):</label>
               <input id="historySearchInput" type="text" placeholder="Dán mã hoặc một phần mã để tìm..." style="margin-top: 5px;">
           </div>
-      </div>
-      <div class="history-layout" style="display: block;">
+        </div>
+
+        <section class="card batch-history-card" style="margin-bottom: 20px; border-left: 5px solid #10b981;">
+          <h2 style="color: #10b981; margin-top: 0;">📦 Lịch Sử Xe Đã Chốt</h2>
+          <p class="muted" style="margin-top: -10px;">Chọn ngày ở Lịch phía trên để xem và tải các xe đã chốt.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>DVVC</th>
+                <th>Tên Lô/Xe</th>
+                <th>Số Đơn Hợp Lệ</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="closedBatchesBody">
+              <tr><td colspan="4" style="text-align:center;">Vui lòng chọn ngày để xem lịch sử xe</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <div class="history-layout" style="display: block;">
           <div class="history-right">
-            <div class="history-actions">
-              <h3 id="historyTitle">Chưa chọn ngày</h3>
+            <div class="history-actions" style="display: flex; justify-content: space-between; align-items: center;">
+              <h3 id="historyTitle" style="margin: 0;">Chưa chọn ngày</h3>
               <button id="exportSelectedDateBtn">Tải Excel ngày đã chọn</button>
             </div>
             <table>
