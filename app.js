@@ -382,6 +382,7 @@ window.closeBatch = function(carrier) {
 }
 
 // --- HÀM VẼ BẢNG LỊCH SỬ XE ---
+// --- HÀM VẼ BẢNG LỊCH SỬ XE (ĐÃ TỐI ƯU ĐẾM THỰC TẾ) ---
 function renderClosedBatches(dateStr) {
   const body = document.getElementById("closedBatchesBody");
   if (!body) return;
@@ -394,12 +395,24 @@ function renderClosedBatches(dateStr) {
     return;
   }
 
+  // 1. Kéo toàn bộ dữ liệu gốc của ngày hôm đó ra để đối soát
+  const allOrders = getAllData()[dateStr]?.orders || [];
+
   [...batchesForDate].reverse().forEach(b => {
+    // 2. ÉP ĐẾM THỰC TẾ: Đếm đúng số lượng đơn trong dữ liệu gốc khớp với xe này
+    const exactCount = allOrders.filter(o => 
+      o.batchId === b.id && 
+      o.carrier === b.carrier && 
+      o.status === STATUS.SUCCESS
+    ).length;
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><strong>${b.carrier}</strong></td>
       <td style="color: blue; font-weight: bold;">${b.id}</td>
-      <td style="font-size: 16px; font-weight: bold; color: #10b981;">${b.count}</td>
+      <td style="font-size: 16px; font-weight: bold; color: #10b981;">
+        ${exactCount} <span style="font-size: 12px; color: #64748b; font-weight: normal;">(Khớp Excel)</span>
+      </td>
       <td><button onclick="downloadBatch('${b.id}', '${b.carrier}', '${b.date}')" style="background: #3b82f6; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer;">📥 Tải File Xe Này</button></td>
     `;
     body.appendChild(tr);
