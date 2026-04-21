@@ -123,7 +123,7 @@ async function init() {
   // 1. Load từ IndexedDB trước (nhanh, không cần mạng)
   await idbLoadAll();
   // 2. Xóa dữ liệu cũ hơn 30 ngày
-  await idbDeleteOld(30);
+  await idbDeleteOld(120);
 
   // 3. Tải 7 ngày gần nhất từ Firebase (đồng bộ dữ liệu các máy khác)
   try {
