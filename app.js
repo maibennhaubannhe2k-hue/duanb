@@ -135,9 +135,17 @@ async function init() {
     }
     const results = await Promise.all(last7Days.map(date => get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`))));
     results.forEach((snapshot, i) => {
-      if (snapshot.exists()) {
-        scanDataCache[last7Days[i]] = snapshot.val();
-        idbSaveDay(snapshot.val());
+      const date = last7Days[i];
+      const localDay = scanDataCache[date];
+      const firebaseDay = snapshot.exists() ? snapshot.val() : null;
+      const localCount = localDay?.orders?.length || 0;
+      const firebaseCount = firebaseDay?.orders?.length || 0;
+
+      if (firebaseCount > localCount) {
+        scanDataCache[date] = firebaseDay;
+        idbSaveDay(firebaseDay);
+      } else if (localCount > firebaseCount && localDay) {
+        set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), localDay);
       }
     });
   } catch (err) {
@@ -396,7 +404,11 @@ function renderBatches() {
 
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
-    tdCount.textContent = batch.count;
+    let realCount = 0;
+    Object.values(scanDataCache).forEach(day => {
+      realCount += (day.orders || []).filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS).length;
+    });
+    tdCount.textContent = realCount;
 
     const tdAction = document.createElement("td");
     const btn = document.createElement("button");
