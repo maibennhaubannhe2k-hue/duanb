@@ -321,9 +321,6 @@ function handleScan(code) {
     setTimeout(() => speak("Đơn trùng"), 400);
   } else {
     status = STATUS.SUCCESS;
-    activeBatch.count++;
-    set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}/count`), activeBatch.count);
-    renderBatches();
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
   }
 
@@ -433,7 +430,13 @@ window.closeBatch = function(carrier) {
   if (!batch) return;
   if (!confirm(`Bạn có chắc chắn muốn CHỐT xe [${batch.id}] của [${carrier}] không?`)) return;
 
-  closedBatches.push({ id: batch.id, carrier, count: batch.count, date: todayStr() });
+  const fromDate = batch.createdDate || todayStr();
+  const realCount = Object.values(scanDataCache)
+    .filter(day => day.date >= fromDate)
+    .flatMap(day => day.orders || [])
+    .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
+    .length;
+  closedBatches.push({ id: batch.id, carrier, count: realCount, date: todayStr() });
   localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
   set(ref(db, CLOSED_BATCH_KEY), closedBatches);
   set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null);
