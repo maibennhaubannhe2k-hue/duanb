@@ -191,7 +191,9 @@ function bindEvents() {
       const name = document.getElementById("batchName").value.trim();
       if (!name) return alert("Vui lòng nhập tên xe/lô!");
       if (activeBatches[carrier]) return alert(`Đang có xe [${activeBatches[carrier].id}] mở cho [${carrier}] rồi! Vui lòng CHỐT XE trước khi tạo mới.`);
-      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), { id: name, count: 0 })
+      const nameUsed = Object.values(activeBatches).some(b => b.id === name) || closedBatches.some(b => b.id === name);
+      if (nameUsed) return alert(`Tên xe [${name}] đã được dùng trước đó! Vui lòng đặt tên khác.`);
+      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), { id: name, count: 0, createdDate: todayStr() })
         .catch(err => console.error("Lỗi tạo xe:", err));
       document.getElementById("batchName").value = "";
       focusOrderInput();
@@ -404,10 +406,12 @@ function renderBatches() {
 
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
-    let realCount = 0;
-    Object.values(scanDataCache).forEach(day => {
-      realCount += (day.orders || []).filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS).length;
-    });
+    const fromDate = batch.createdDate || todayStr();
+    const realCount = Object.values(scanDataCache)
+      .filter(day => day.date >= fromDate)
+      .flatMap(day => day.orders || [])
+      .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
+      .length;
     tdCount.textContent = realCount;
 
     const tdAction = document.createElement("td");
