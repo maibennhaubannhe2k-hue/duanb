@@ -155,6 +155,20 @@ async function init() {
   renderAll();
   renderBatches();
 
+  onValue(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), (snapshot) => {
+    if (snapshot.exists()) {
+      const firebaseDay = snapshot.val();
+      const localCount = scanDataCache[todayStr()]?.orders?.length || 0;
+      const firebaseCount = firebaseDay?.orders?.length || 0;
+      if (firebaseCount > localCount) {
+        scanDataCache[todayStr()] = firebaseDay;
+        idbSaveDay(firebaseDay);
+        renderAll();
+        renderBatches();
+      }
+    }
+  });
+
   onValue(ref(db, CANCELED_KEY), (snapshot) => {
     const data = snapshot.val();
     if (data) {
