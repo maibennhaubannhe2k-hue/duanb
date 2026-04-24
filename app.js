@@ -328,6 +328,7 @@ function handleScan(code) {
   scanDataCache[date] = day;
   saveAllData(date, day);
   renderAll();
+  renderBatches();
 }
 
 // === 7. RENDER ===
