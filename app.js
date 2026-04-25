@@ -125,29 +125,24 @@ async function init() {
   // 2. Xóa dữ liệu cũ hơn 30 ngày
   await idbDeleteOld(120);
 
-  // 3. Tải 7 ngày gần nhất từ Firebase (đồng bộ dữ liệu các máy khác)
+  // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
-    const last7Days = [];
-    for (let i = 0; i < 7; i++) {
+    const missingDays = [];
+    for (let i = 1; i < 7; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      last7Days.push(d.toISOString().slice(0, 10));
+      const dateStr = d.toISOString().slice(0, 10);
+      if (!scanDataCache[dateStr]) missingDays.push(dateStr);
     }
-    const results = await Promise.all(last7Days.map(date => get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`))));
-    results.forEach((snapshot, i) => {
-      const date = last7Days[i];
-      const localDay = scanDataCache[date];
-      const firebaseDay = snapshot.exists() ? snapshot.val() : null;
-      const localCount = localDay?.orders?.length || 0;
-      const firebaseCount = firebaseDay?.orders?.length || 0;
-
-      if (firebaseCount > localCount) {
-        scanDataCache[date] = firebaseDay;
-        idbSaveDay(firebaseDay);
-      } else if (localCount > firebaseCount && localDay) {
-        set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), localDay);
-      }
-    });
+    if (missingDays.length > 0) {
+      const results = await Promise.all(missingDays.map(date => get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`))));
+      results.forEach((snapshot, i) => {
+        if (snapshot.exists()) {
+          scanDataCache[missingDays[i]] = snapshot.val();
+          idbSaveDay(snapshot.val());
+        }
+      });
+    }
   } catch (err) {
     console.error("Lỗi tải Firebase:", err);
   }
@@ -163,8 +158,8 @@ async function init() {
       if (firebaseCount > localCount) {
         scanDataCache[todayStr()] = firebaseDay;
         idbSaveDay(firebaseDay);
-        renderAll();
         renderBatches();
+        renderTodayList(getDayOrders(todayStr()));
       }
     }
   });
@@ -554,6 +549,7 @@ function switchPage(pageId) {
   document.querySelectorAll(".app-page").forEach(p => p.classList.toggle("active", p.id === pageId));
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
   if (pageId === "scanPage") focusOrderInput();
+  if (pageId === "dashboardPage") renderAll();
 }
 
 function exportOrdersToExcel(data, fileName) {
