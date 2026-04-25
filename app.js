@@ -260,8 +260,9 @@ function bindEvents() {
       try {
         const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
         if (snapshot.exists()) {
-          scanDataCache[date] = snapshot.val();
-          idbSaveDay(snapshot.val());
+          const day = firebaseDayToLocal(snapshot.val(), date);
+          scanDataCache[date] = day;
+          idbSaveDay(day);
         }
       } catch (err) { console.error("Lỗi tải ngày cũ:", err); }
     }
@@ -560,6 +561,7 @@ function detectCarrier(code) {
 }
 
 function switchPage(pageId) {
+  activePage = pageId;
   document.querySelectorAll(".app-page").forEach(p => p.classList.toggle("active", p.id === pageId));
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
   if (pageId === "scanPage") focusOrderInput();
