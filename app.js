@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, onValue, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -138,8 +138,9 @@ async function init() {
       const results = await Promise.all(missingDays.map(date => get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`))));
       results.forEach((snapshot, i) => {
         if (snapshot.exists()) {
-          scanDataCache[missingDays[i]] = snapshot.val();
-          idbSaveDay(snapshot.val());
+          const day = firebaseDayToLocal(snapshot.val(), missingDays[i]);
+          scanDataCache[missingDays[i]] = day;
+          idbSaveDay(day);
         }
       });
     }
@@ -152,7 +153,7 @@ async function init() {
 
   onValue(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), (snapshot) => {
     if (snapshot.exists()) {
-      const firebaseDay = snapshot.val();
+      const firebaseDay = firebaseDayToLocal(snapshot.val(), todayStr());
       const localCount = scanDataCache[todayStr()]?.orders?.length || 0;
       const firebaseCount = firebaseDay?.orders?.length || 0;
       if (firebaseCount > localCount) {
@@ -333,9 +334,10 @@ function handleScan(code) {
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
   }
 
-  day.orders.push({ code, status, carrier, time: now, batchId: activeBatch ? activeBatch.id : "" });
+  const newOrder = { code, status, carrier, time: now, batchId: activeBatch ? activeBatch.id : "" };
+  day.orders.push(newOrder);
   scanDataCache[date] = day;
-  saveAllData(date, day);
+  saveAllData(date, day, newOrder);
   renderAll();
   renderBatches();
 }
@@ -522,9 +524,21 @@ function renderChart(orders) {
 // === 8. HÀM HỖ TRỢ ===
 function getAllData() { return scanDataCache; }
 
-function saveAllData(date, dayData) {
+function firebaseDayToLocal(fbDay, date) {
+  if (!fbDay) return null;
+  const raw = fbDay.orders || {};
+  const orders = Array.isArray(raw) ? raw : Object.values(raw);
+  return { date: fbDay.date || date, orders };
+}
+
+function saveAllData(date, dayData, newOrder) {
   idbSaveDay(dayData);
-  set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), dayData);
+  if (newOrder) {
+    if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date);
+    push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
+  } else {
+    set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), dayData);
+  }
 }
 
 function getDayOrders(date) { return scanDataCache[date]?.orders || []; }
