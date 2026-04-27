@@ -122,7 +122,7 @@ async function init() {
 
   // 1. Load từ IndexedDB trước (nhanh, không cần mạng)
   await idbLoadAll();
-  // 2. Xóa dữ liệu cũ hơn 30 ngày
+  // 2. Xóa dữ liệu cũ hơn 120 ngày
   await idbDeleteOld(120);
 
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
@@ -176,8 +176,8 @@ async function init() {
   onValue(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
     const data = snapshot.val();
     if (data) {
-      closedBatches = data;
-      localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(data));
+      closedBatches = Array.isArray(data) ? data : Object.values(data);
+      localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
     }
   });
 
@@ -271,20 +271,43 @@ function bindEvents() {
   });
 
   historySearchInput?.addEventListener("input", (e) => {
-    const term = e.target.value.toLowerCase().trim();
-    if (term.length > 0 && term.length < 3) return;
+    const raw = e.target.value.trim();
+    if (!raw) {
+      const date = historyDatePicker?.value;
+      if (date) renderHistoryTable(getDayOrders(date), `Lịch sử ngày ${date}`);
+      else renderHistoryTable([], "Vui lòng chọn ngày");
+      return;
+    }
+    const terms = raw.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
+    if (terms.length === 0) return;
     let results = [];
     Object.keys(scanDataCache).forEach(date => {
-      results = results.concat(scanDataCache[date].orders.filter(o => o.code.toLowerCase().includes(term)));
+      results = results.concat(scanDataCache[date].orders.filter(o => terms.some(t => o.code.toLowerCase().includes(t))));
     });
-    renderHistoryTable(results, term ? `Kết quả tìm kiếm: ${term}` : "Vui lòng chọn ngày");
+    renderHistoryTable(results, `Kết quả tìm kiếm: ${terms.join(", ")}`);
+  });
+
+  document.getElementById("selectAllBatches")?.addEventListener("change", (e) => {
+    document.querySelectorAll(".batch-checkbox").forEach(cb => cb.checked = e.target.checked);
+  });
+
+  document.getElementById("downloadSelectedBatchesBtn")?.addEventListener("click", () => {
+    const selected = [...document.querySelectorAll(".batch-checkbox:checked")];
+    if (selected.length === 0) return alert("Vui lòng chọn ít nhất 1 xe!");
+    const rows = [];
+    selected.forEach(cb => {
+      const { id, carrier, date } = cb.dataset;
+      const orders = (scanDataCache[date]?.orders || []).filter(o => o.batchId === id && o.carrier === carrier && o.status === STATUS.SUCCESS);
+      orders.forEach(o => rows.push({ "Lô/Xe": o.batchId, "DVVC": o.carrier, "Thời gian": formatTime(o.time), "Mã đơn": o.code }));
+    });
+    exportOrdersToExcel(rows, `BanGiao_NhieuXe_${todayStr()}.xlsx`);
   });
 
   document.getElementById("exportSelectedDateBtn").onclick = () => {
     const rows = [];
     document.querySelectorAll("#historyDetailBody tr").forEach(tr => {
       const tds = tr.querySelectorAll("td");
-      if (tds.length > 0) rows.push({ "Thời gian": tds[0].innerText, "Mã đơn": tds[1].innerText, "DVVC": tds[2].innerText, "Trạng thái": tds[3].innerText });
+      if (tds.length > 0) rows.push({ "Thời gian": tds[0].innerText, "Mã đơn": tds[1].innerText, "DVVC": tds[2].innerText, "Lô/Xe": tds[3].innerText, "Trạng thái": tds[4].innerText });
     });
     exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
@@ -384,7 +407,7 @@ function renderTodayList(orders) {
   reversed.slice(0, limit).forEach(o => {
     const tr = document.createElement("tr");
     tr.className = statusClass[o.status];
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${statusLabel[o.status]}</td>`;
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
     body.appendChild(tr);
   });
   if (btn) {
@@ -461,18 +484,24 @@ window.closeBatch = function(carrier) {
 
 function renderClosedBatches(dateStr) {
   const body = document.getElementById("closedBatchesBody");
+  const downloadBtn = document.getElementById("downloadSelectedBatchesBtn");
+  const selectAll = document.getElementById("selectAllBatches");
   if (!body) return;
   const batchesForDate = closedBatches.filter(b => b.date === dateStr);
   body.innerHTML = "";
+  if (downloadBtn) downloadBtn.style.display = "none";
+  if (selectAll) selectAll.checked = false;
   if (batchesForDate.length === 0) {
-    body.innerHTML = `<tr><td colspan="4" style="text-align:center;">Không có xe nào được chốt trong ngày này</td></tr>`;
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;">Không có xe nào được chốt trong ngày này</td></tr>`;
     return;
   }
+  if (downloadBtn) downloadBtn.style.display = "inline-block";
   const allOrders = scanDataCache[dateStr]?.orders || [];
   [...batchesForDate].reverse().forEach(b => {
     const exactCount = allOrders.filter(o => o.batchId === b.id && o.carrier === b.carrier && o.status === STATUS.SUCCESS).length;
     const tr = document.createElement("tr");
     tr.innerHTML = `
+      <td><input type="checkbox" class="batch-checkbox" data-id="${b.id}" data-carrier="${b.carrier}" data-date="${b.date}"></td>
       <td><strong>${b.carrier}</strong></td>
       <td style="color:blue;font-weight:bold;">${b.id}</td>
       <td style="font-size:16px;font-weight:bold;color:#10b981;">${exactCount} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
@@ -498,7 +527,7 @@ function renderHistoryTable(orders, title) {
   [...orders].reverse().forEach(o => {
     const tr = document.createElement("tr");
     tr.className = statusClass[o.status];
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${statusLabel[o.status]}</td>`;
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
     historyDetailBody.appendChild(tr);
   });
 }

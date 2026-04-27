@@ -73,6 +73,7 @@
                   <th>Thời gian</th>
                   <th>Mã đơn</th>
                   <th>DVVC</th>
+                  <th>Lô/Xe</th>
                   <th>Trạng thái</th>
                 </tr>
               </thead>
@@ -181,9 +182,13 @@ G12345678"></textarea>
         <section class="card batch-history-card" style="margin-bottom: 20px; border-left: 5px solid #10b981;">
           <h2 style="color: #10b981; margin-top: 0;">📦 Lịch Sử Xe Đã Chốt</h2>
           <p class="muted" style="margin-top: -10px;">Chọn ngày ở Lịch phía trên để xem và tải các xe đã chốt.</p>
+          <div style="margin-bottom: 10px;">
+            <button id="downloadSelectedBatchesBtn" style="background:#10b981;display:none;">📥 Tải các xe đã chọn</button>
+          </div>
           <table>
             <thead>
               <tr>
+                <th style="width:36px;"><input type="checkbox" id="selectAllBatches"></th>
                 <th>DVVC</th>
                 <th>Tên Lô/Xe</th>
                 <th>Số Đơn Hợp Lệ</th>
@@ -191,7 +196,7 @@ G12345678"></textarea>
               </tr>
             </thead>
             <tbody id="closedBatchesBody">
-              <tr><td colspan="4" style="text-align:center;">Vui lòng chọn ngày để xem lịch sử xe</td></tr>
+              <tr><td colspan="5" style="text-align:center;">Vui lòng chọn ngày để xem lịch sử xe</td></tr>
             </tbody>
           </table>
         </section>
@@ -208,6 +213,7 @@ G12345678"></textarea>
                   <th>Thời gian</th>
                   <th>Mã đơn</th>
                   <th>DVVC</th>
+                  <th>Lô/Xe</th>
                   <th>Trạng thái</th>
                 </tr>
               </thead>
