@@ -128,10 +128,8 @@ async function init() {
   await idbLoadAll();
   // 2. Xóa dữ liệu cũ hơn 120 ngày
   await idbDeleteOld(120);
-  // 2b. Tự động chốt xe còn sót từ ngày hôm trước (khi mở app)
-  autoCloseOldBatches();
-  // 2c. Đặt lịch tự động chốt lúc 00:00 mỗi đêm (khi app đang mở)
-  scheduleMidnightAutoClose();
+  // 2b. Đặt lịch reset ngày lúc 00:00 (đổi listener Firebase, reset filter)
+  scheduleMidnightReset();
 
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
@@ -333,6 +331,13 @@ function handleScan(code) {
 
   const activeBatch = activeBatches[carrier];
 
+  // Chặn quét nếu xe của carrier này chưa chốt từ ngày hôm trước
+  if (activeBatch && activeBatch.createdDate && activeBatch.createdDate < date) {
+    showMessage(`⚠️ XE [${activeBatch.id}] CỦA [${carrier}] CHƯA CHỐT TỪ NGÀY ${activeBatch.createdDate}\nVui lòng chốt xe này trước!`, "warning");
+    playTone("error");
+    return;
+  }
+
   if (!canceledSet.has(code) && !activeBatch) {
     showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error");
     playTone("error");
@@ -401,8 +406,10 @@ function renderAll() {
     renderHistoryTable(dOrders, `Danh sách ĐƠN TRÙNG ngày ${currentFilter.singleDate}`);
   };
 
-  renderCarrierTable(filteredOrders);
-  renderChart(filteredOrders);
+  if (activePage === "dashboardPage") {
+    renderCarrierTable(filteredOrders);
+    renderChart(filteredOrders);
+  }
   renderTodayList(getDayOrders(todayStr()));
   loadCancelledCount();
   if (activePage === "scanPage") focusOrderInput();
@@ -445,8 +452,13 @@ function renderBatches() {
     const batch = activeBatches[carrier];
     const tr = document.createElement("tr");
 
+    const isStale = batch.createdDate && batch.createdDate < todayStr();
+    if (isStale) tr.style.background = "#fff7ed";
+
     const tdName = document.createElement("td");
-    tdName.innerHTML = `<strong style="color:blue;">${batch.id}</strong><br><span style="font-size:13px;">${carrier}</span>`;
+    tdName.innerHTML = isStale
+      ? `<strong style="color:#dc2626;">${batch.id}</strong><br><span style="font-size:13px;color:#dc2626;">⚠️ ${carrier} — tạo ngày ${batch.createdDate}</span>`
+      : `<strong style="color:blue;">${batch.id}</strong><br><span style="font-size:13px;">${carrier}</span>`;
 
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
@@ -490,6 +502,7 @@ window.closeBatch = function(carrier) {
   delete activeBatches[carrier];
   localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
 
+  renderBatches();
   const historyDate = document.getElementById("historyDatePicker");
   if (historyDate?.value === todayStr()) renderClosedBatches(todayStr());
   focusOrderInput();
@@ -571,8 +584,6 @@ function renderChart(orders) {
 }
 
 // === 8. HÀM HỖ TRỢ ===
-function getAllData() { return scanDataCache; }
-
 function firebaseDayToLocal(fbDay, date) {
   if (!fbDay) return null;
   const raw = fbDay.orders || {};
@@ -702,46 +713,15 @@ function subscribeToTodayScan() {
   });
 }
 
-function scheduleMidnightAutoClose() {
+function scheduleMidnightReset() {
   const now = new Date();
   const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
-  const msUntilMidnight = nextMidnight - now;
   setTimeout(() => {
-    autoCloseOldBatches();
-    renderBatches();
-    subscribeToTodayScan(); // đổi sang lắng nghe ngày mới
-    scheduleMidnightAutoClose();
-  }, msUntilMidnight);
-}
-
-function autoCloseOldBatches() {
-  const today = todayStr();
-  const d = new Date(); d.setDate(d.getDate() - 1);
-  const yesterday = localDateStr(d);
-
-  const staleCarriers = Object.keys(activeBatches).filter(carrier => {
-    const b = activeBatches[carrier];
-    return b.createdDate && b.createdDate < today;
-  });
-  if (staleCarriers.length === 0) return;
-
-  staleCarriers.forEach(carrier => {
-    const batch = activeBatches[carrier];
-    const fromDate = batch.createdDate;
-    const closeDate = fromDate > yesterday ? fromDate : yesterday;
-    const realCount = Object.values(scanDataCache)
-      .filter(day => day.date >= fromDate && day.date <= closeDate)
-      .flatMap(day => day.orders || [])
-      .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
-      .length;
-    closedBatches.push({ id: batch.id, carrier, count: realCount, date: closeDate, createdDate: fromDate });
-    delete activeBatches[carrier];
-  });
-
-  localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
-  localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-  set(ref(db, CLOSED_BATCH_KEY), closedBatches);
-  staleCarriers.forEach(carrier => set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null));
-
-  console.log(`[AutoClose] Đã tự động chốt ${staleCarriers.length} xe cũ: ${staleCarriers.join(", ")}`);
+    subscribeToTodayScan();
+    const newDay = todayStr();
+    document.getElementById("singleDate").value = newDay;
+    currentFilter = { mode: "single", singleDate: newDay };
+    showAllTodayOrders = false;
+    scheduleMidnightReset();
+  }, nextMidnight - now);
 }
