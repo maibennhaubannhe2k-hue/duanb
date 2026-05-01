@@ -19,6 +19,7 @@ const db = getDatabase(app);
 const FIREBASE_SCAN_KEY = "warehouse_scan_data_v1";
 const CANCELED_KEY = "warehouse_cancelled_orders_v1";
 const ACTIVE_BATCH_KEY = "warehouse_active_batches_v2";
+const ACTIVE_BATCH_LOCAL_KEY = "warehouse_active_batches_local";
 const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1";
 
 // IndexedDB — lưu đơn hàng không giới hạn dung lượng
@@ -36,7 +37,7 @@ let showAllTodayOrders = false;
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
-let activeBatches = {};
+let activeBatches = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY)) || {};
 let closedBatches = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY)) || [];
 
 // DOM Elements
@@ -54,13 +55,16 @@ const historyDatePicker = document.getElementById("historyDatePicker");
 const historySearchInput = document.getElementById("historySearchInput");
 
 // === 3. INDEXEDDB WRAPPER ===
+let idbInstance = null;
+
 function openIDB() {
+  if (idbInstance) return Promise.resolve(idbInstance);
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = e => {
       e.target.result.createObjectStore(IDB_STORE, { keyPath: "date" });
     };
-    req.onsuccess = e => resolve(e.target.result);
+    req.onsuccess = e => { idbInstance = e.target.result; resolve(idbInstance); };
     req.onerror = e => reject(e.target.error);
   });
 }
@@ -91,7 +95,7 @@ async function idbDeleteOld(keepDays) {
   const idb = await openIDB();
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - keepDays);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
+  const cutoffStr = localDateStr(cutoff);
   return new Promise((resolve, reject) => {
     const req = idb.transaction(IDB_STORE, "readwrite").objectStore(IDB_STORE).openCursor();
     req.onsuccess = e => {
@@ -124,6 +128,10 @@ async function init() {
   await idbLoadAll();
   // 2. Xóa dữ liệu cũ hơn 120 ngày
   await idbDeleteOld(120);
+  // 2b. Tự động chốt xe còn sót từ ngày hôm trước (khi mở app)
+  autoCloseOldBatches();
+  // 2c. Đặt lịch tự động chốt lúc 00:00 mỗi đêm (khi app đang mở)
+  scheduleMidnightAutoClose();
 
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
@@ -131,7 +139,7 @@ async function init() {
     for (let i = 1; i < 7; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().slice(0, 10);
+      const dateStr = localDateStr(d);
       if (!scanDataCache[dateStr]) missingDays.push(dateStr);
     }
     if (missingDays.length > 0) {
@@ -182,8 +190,15 @@ async function init() {
   });
 
   onValue(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
-    console.log("🔄 Xe sync:", snapshot.val());
-    activeBatches = snapshot.val() || {};
+    const firebaseBatches = snapshot.val() || {};
+    const localBatches = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY)) || {};
+    Object.keys(localBatches).forEach(carrier => {
+      if (!firebaseBatches[carrier]) {
+        set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), localBatches[carrier]);
+      }
+    });
+    activeBatches = { ...localBatches, ...firebaseBatches };
+    localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
     renderBatches();
   }, (err) => console.error("❌ Lỗi sync xe:", err));
 }
@@ -203,7 +218,10 @@ function bindEvents() {
       if (activeBatches[carrier]) return alert(`Đang có xe [${activeBatches[carrier].id}] mở cho [${carrier}] rồi! Vui lòng CHỐT XE trước khi tạo mới.`);
       const nameUsed = Object.values(activeBatches).some(b => b.id === name) || closedBatches.some(b => b.id === name);
       if (nameUsed) return alert(`Tên xe [${name}] đã được dùng trước đó! Vui lòng đặt tên khác.`);
-      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), { id: name, count: 0, createdDate: todayStr() })
+      const newBatch = { id: name, count: 0, createdDate: todayStr() };
+      activeBatches[carrier] = newBatch;
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), newBatch)
         .catch(err => console.error("Lỗi tạo xe:", err));
       document.getElementById("batchName").value = "";
       focusOrderInput();
@@ -256,7 +274,7 @@ function bindEvents() {
     // Nếu ngày cũ hơn 7 ngày, thử tải từ Firebase
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - 7);
-    if (date < cutoff.toISOString().slice(0, 10) && !scanDataCache[date]) {
+    if (date < localDateStr(cutoff) && !scanDataCache[date]) {
       try {
         const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
         if (snapshot.exists()) {
@@ -296,8 +314,12 @@ function bindEvents() {
     if (selected.length === 0) return alert("Vui lòng chọn ít nhất 1 xe!");
     const rows = [];
     selected.forEach(cb => {
-      const { id, carrier, date } = cb.dataset;
-      const orders = (scanDataCache[date]?.orders || []).filter(o => o.batchId === id && o.carrier === carrier && o.status === STATUS.SUCCESS);
+      const { id, carrier, date, createddate } = cb.dataset;
+      const fromDate = createddate || date;
+      const orders = Object.values(scanDataCache)
+        .filter(day => day.date >= fromDate && day.date <= date)
+        .flatMap(day => day.orders || [])
+        .filter(o => o.batchId === id && o.carrier === carrier && o.status === STATUS.SUCCESS);
       orders.forEach(o => rows.push({ "Lô/Xe": o.batchId, "DVVC": o.carrier, "Thời gian": formatTime(o.time), "Mã đơn": o.code }));
     });
     exportOrdersToExcel(rows, `BanGiao_NhieuXe_${todayStr()}.xlsx`);
@@ -333,7 +355,7 @@ function handleScan(code) {
   const last5Days = [];
   for (let i = 0; i < 5; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
-    last5Days.push(d.toISOString().slice(0, 10));
+    last5Days.push(localDateStr(d));
   }
   const isDuplicateIn5Days = last5Days.some(dStr => {
     const dayData = scanDataCache[dStr];
@@ -356,6 +378,7 @@ function handleScan(code) {
   } else {
     status = STATUS.SUCCESS;
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
+    playTone("success");
   }
 
   const newOrder = { code, status, carrier, time: now, batchId: activeBatch ? activeBatch.id : "" };
@@ -468,14 +491,16 @@ window.closeBatch = function(carrier) {
 
   const fromDate = batch.createdDate || todayStr();
   const realCount = Object.values(scanDataCache)
-    .filter(day => day.date >= fromDate)
+    .filter(day => day.date >= fromDate && day.date <= todayStr())
     .flatMap(day => day.orders || [])
     .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
     .length;
-  closedBatches.push({ id: batch.id, carrier, count: realCount, date: todayStr() });
+  closedBatches.push({ id: batch.id, carrier, count: realCount, date: todayStr(), createdDate: fromDate });
   localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
   set(ref(db, CLOSED_BATCH_KEY), closedBatches);
   set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null);
+  delete activeBatches[carrier];
+  localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
 
   const historyDate = document.getElementById("historyDatePicker");
   if (historyDate?.value === todayStr()) renderClosedBatches(todayStr());
@@ -496,24 +521,30 @@ function renderClosedBatches(dateStr) {
     return;
   }
   if (downloadBtn) downloadBtn.style.display = "inline-block";
-  const allOrders = scanDataCache[dateStr]?.orders || [];
   [...batchesForDate].reverse().forEach(b => {
-    const exactCount = allOrders.filter(o => o.batchId === b.id && o.carrier === b.carrier && o.status === STATUS.SUCCESS).length;
+    const fromDate = b.createdDate || b.date;
+    const exactCount = Object.values(scanDataCache)
+      .filter(day => day.date >= fromDate && day.date <= b.date)
+      .flatMap(day => day.orders || [])
+      .filter(o => o.batchId === b.id && o.carrier === b.carrier && o.status === STATUS.SUCCESS).length;
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" class="batch-checkbox" data-id="${b.id}" data-carrier="${b.carrier}" data-date="${b.date}"></td>
+      <td><input type="checkbox" class="batch-checkbox" data-id="${b.id}" data-carrier="${b.carrier}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
       <td><strong>${b.carrier}</strong></td>
       <td style="color:blue;font-weight:bold;">${b.id}</td>
       <td style="font-size:16px;font-weight:bold;color:#10b981;">${exactCount} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
-      <td><button onclick="downloadBatch('${b.id}','${b.carrier}','${b.date}')" style="background:#3b82f6;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">📥 Tải File Xe Này</button></td>
+      <td><button onclick="downloadBatch('${b.id}','${b.carrier}','${b.date}','${b.createdDate || b.date}')" style="background:#3b82f6;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">📥 Tải File Xe Này</button></td>
     `;
     body.appendChild(tr);
   });
 }
 
-window.downloadBatch = function(batchId, carrier, dateStr) {
-  const allOrders = scanDataCache[dateStr]?.orders || [];
-  const batchOrders = allOrders.filter(o => o.batchId === batchId && o.carrier === carrier && o.status === STATUS.SUCCESS);
+window.downloadBatch = function(batchId, carrier, dateStr, createdDate) {
+  const fromDate = createdDate || dateStr;
+  const batchOrders = Object.values(scanDataCache)
+    .filter(day => day.date >= fromDate && day.date <= dateStr)
+    .flatMap(day => day.orders || [])
+    .filter(o => o.batchId === batchId && o.carrier === carrier && o.status === STATUS.SUCCESS);
   if (batchOrders.length > 0) {
     exportOrdersToExcel(batchOrders.map(o => ({ "Lô/Xe": o.batchId, "Thời gian": formatTime(o.time), "Mã đơn": o.code, "DVVC": o.carrier })), `BanGiao_${carrier}_${batchId}_${dateStr}.xlsx`);
   } else {
@@ -615,21 +646,34 @@ function loadCancelledToTextarea() { cancelledInput.value = [...getCancelledSet(
 function loadCancelledCount() { cancelledCount.textContent = getCancelledSet().size; }
 function normalizeCodes(text) { return text.split(/\r?\n/).map(x => x.trim()).filter(Boolean); }
 function showMessage(text, type) { scanMessage.className = `message ${type}`; scanMessage.textContent = text; }
-function todayStr() { return new Date().toISOString().slice(0, 10); }
+function localDateStr(d = new Date()) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function todayStr() { return localDateStr(); }
 function formatTime(iso) { return new Date(iso).toLocaleString("vi-VN"); }
 function focusOrderInput() { setTimeout(() => orderInput.focus(), 0); }
 
+const audioCache = {
+  success: new Audio("di.wav"),
+  warning: new Audio("dontrung.wav"),
+  error: new Audio("donhuy.wav")
+};
+
 function playTone(kind) {
-  const urls = { warning: "https://assets.mixkit.co/active_storage/sfx/950/950-preview.mp3", error: "https://assets.mixkit.co/active_storage/sfx/997/997-preview.mp3" };
-  if (urls[kind]) new Audio(urls[kind]).play().catch(() => {});
+  const audio = audioCache[kind];
+  if (!audio) return;
+  audio.currentTime = 0;
+  audio.play().catch(() => {});
 }
 
+const utterance = ('speechSynthesis' in window) ? new SpeechSynthesisUtterance() : null;
+if (utterance) { utterance.lang = 'vi-VN'; utterance.rate = 1.1; }
+
 function speak(text) {
-  if ('speechSynthesis' in window) {
-    const msg = new SpeechSynthesisUtterance(text);
-    msg.lang = 'vi-VN'; msg.rate = 1.1;
-    window.speechSynthesis.speak(msg);
-  }
+  if (!utterance) return;
+  window.speechSynthesis.cancel();
+  utterance.text = text;
+  window.speechSynthesis.speak(utterance);
 }
 
 function renderCarrierTable(orders) {
@@ -649,4 +693,46 @@ function renderCarrierTable(orders) {
       exportOrdersToExcel(list.map(o => ({ "Mã đơn": o.code, "Thời gian": formatTime(o.time) })), `don_tong_${btn.dataset.carrier}.xlsx`);
     };
   });
+}
+
+function scheduleMidnightAutoClose() {
+  const now = new Date();
+  const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  const msUntilMidnight = nextMidnight - now;
+  setTimeout(() => {
+    autoCloseOldBatches();
+    scheduleMidnightAutoClose();
+  }, msUntilMidnight);
+}
+
+function autoCloseOldBatches() {
+  const today = todayStr();
+  const d = new Date(); d.setDate(d.getDate() - 1);
+  const yesterday = localDateStr(d);
+
+  const staleCarriers = Object.keys(activeBatches).filter(carrier => {
+    const b = activeBatches[carrier];
+    return b.createdDate && b.createdDate < today;
+  });
+  if (staleCarriers.length === 0) return;
+
+  staleCarriers.forEach(carrier => {
+    const batch = activeBatches[carrier];
+    const fromDate = batch.createdDate;
+    const closeDate = fromDate > yesterday ? fromDate : yesterday;
+    const realCount = Object.values(scanDataCache)
+      .filter(day => day.date >= fromDate && day.date <= closeDate)
+      .flatMap(day => day.orders || [])
+      .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
+      .length;
+    closedBatches.push({ id: batch.id, carrier, count: realCount, date: closeDate, createdDate: fromDate });
+    delete activeBatches[carrier];
+  });
+
+  localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+  localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+  set(ref(db, CLOSED_BATCH_KEY), closedBatches);
+  staleCarriers.forEach(carrier => set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null));
+
+  console.log(`[AutoClose] Đã tự động chốt ${staleCarriers.length} xe cũ: ${staleCarriers.join(", ")}`);
 }
