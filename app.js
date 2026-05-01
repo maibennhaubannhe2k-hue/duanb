@@ -167,25 +167,48 @@ async function init() {
     }
   });
 
+  // Closed batches: chỉ THÊM từ Firebase, không bao giờ xóa entry local
+  // Nếu thiết bị khác chốt xe → xóa khỏi activeBatches local
   onValue(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
     const data = snapshot.val();
-    if (data) {
-      closedBatches = Array.isArray(data) ? data : Object.values(data);
-      localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
-    }
-  });
-
-  onValue(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
-    const firebaseBatches = snapshot.val() || {};
-    const localBatches = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY)) || {};
-    Object.keys(localBatches).forEach(carrier => {
-      if (!firebaseBatches[carrier]) {
-        set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), localBatches[carrier]);
+    if (!data) return;
+    const fromFirebase = Array.isArray(data) ? data : Object.values(data);
+    const localKeys = new Set(closedBatches.map(b => `${b.id}|${b.carrier}`));
+    let addedClosed = false;
+    let removedActive = false;
+    fromFirebase.forEach(b => {
+      if (!localKeys.has(`${b.id}|${b.carrier}`)) {
+        closedBatches.push(b);
+        addedClosed = true;
+      }
+      // Nếu xe đã chốt vẫn đang hiện trong activeBatches → xóa đi
+      if (activeBatches[b.carrier]?.id === b.id) {
+        delete activeBatches[b.carrier];
+        removedActive = true;
       }
     });
-    activeBatches = { ...localBatches, ...firebaseBatches };
-    localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-    renderBatches();
+    if (addedClosed) localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+    if (removedActive) localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+    if (addedClosed || removedActive) renderBatches();
+  });
+
+  // Active batches: chỉ THÊM xe mới từ Firebase (thiết bị khác tạo)
+  // Không bao giờ xóa xe đang có local — chỉ closeBatch() mới được xóa
+  onValue(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
+    const firebaseBatches = snapshot.val() || {};
+    const closedIds = new Set(closedBatches.map(b => b.id));
+    let changed = false;
+    Object.keys(firebaseBatches).forEach(carrier => {
+      const batch = firebaseBatches[carrier];
+      if (!activeBatches[carrier] && !closedIds.has(batch.id)) {
+        activeBatches[carrier] = batch;
+        changed = true;
+      }
+    });
+    if (changed) {
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+      renderBatches();
+    }
   }, (err) => console.error("❌ Lỗi sync xe:", err));
 }
 
@@ -210,6 +233,7 @@ function bindEvents() {
       set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), newBatch)
         .catch(err => console.error("Lỗi tạo xe:", err));
       document.getElementById("batchName").value = "";
+      renderBatches();
       focusOrderInput();
     });
   }
@@ -486,7 +510,10 @@ function renderBatches() {
 
 window.closeBatch = function(carrier) {
   const batch = activeBatches[carrier];
-  if (!batch) return;
+  if (!batch) {
+    alert(`Lỗi: Không tìm thấy xe cho [${carrier}]. Vui lòng tải lại trang.`);
+    return;
+  }
   if (!confirm(`Bạn có chắc chắn muốn CHỐT xe [${batch.id}] của [${carrier}] không?`)) return;
 
   const fromDate = batch.createdDate || todayStr();
@@ -495,17 +522,28 @@ window.closeBatch = function(carrier) {
     .flatMap(day => day.orders || [])
     .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
     .length;
-  closedBatches.push({ id: batch.id, carrier, count: realCount, date: todayStr(), createdDate: fromDate });
+
+  const closedEntry = { id: batch.id, carrier, count: realCount, date: todayStr(), createdDate: fromDate };
+
+  // 1. Cập nhật local state ngay lập tức (TRƯỚC khi gọi Firebase)
+  closedBatches = closedBatches.filter(b => !(b.id === batch.id && b.carrier === carrier));
+  closedBatches.push(closedEntry);
   localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
-  set(ref(db, CLOSED_BATCH_KEY), closedBatches);
-  set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null);
+
   delete activeBatches[carrier];
   localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
 
+  // 2. Cập nhật UI ngay lập tức (TRƯỚC khi gọi Firebase)
   renderBatches();
   const historyDate = document.getElementById("historyDatePicker");
   if (historyDate?.value === todayStr()) renderClosedBatches(todayStr());
   focusOrderInput();
+
+  // 3. Đồng bộ Firebase async (không ảnh hưởng local đã chốt)
+  setTimeout(() => {
+    set(ref(db, CLOSED_BATCH_KEY), closedBatches).catch(err => console.error("Lỗi sync closed:", err));
+    set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
+  }, 0);
 }
 
 function renderClosedBatches(dateStr) {
@@ -637,6 +675,16 @@ function exportOrdersToExcel(data, fileName) {
 
 function groupByCarrier(orders) {
   return orders.reduce((acc, o) => { acc[o.carrier] = acc[o.carrier] || []; acc[o.carrier].push(o); return acc; }, {});
+}
+
+function deduplicateClosedBatches(batches) {
+  const seen = new Set();
+  return batches.filter(b => {
+    const key = `${b.id}|${b.carrier}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function getCancelledSet() { return new Set(JSON.parse(localStorage.getItem(CANCELED_KEY)) || []); }
