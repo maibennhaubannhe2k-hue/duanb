@@ -749,16 +749,21 @@ let unsubscribeTodayScan = null;
 function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
   unsubscribeTodayScan = onValue(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), (snapshot) => {
-    if (snapshot.exists()) {
-      const firebaseDay = firebaseDayToLocal(snapshot.val(), todayStr());
-      const localCount = scanDataCache[todayStr()]?.orders?.length || 0;
-      const firebaseCount = firebaseDay?.orders?.length || 0;
-      if (firebaseCount > localCount) {
-        scanDataCache[todayStr()] = firebaseDay;
-        idbSaveDay(firebaseDay);
-        renderBatches();
-        renderTodayList(getDayOrders(todayStr()));
-      }
+    const localDay = scanDataCache[todayStr()];
+    const localCount = localDay?.orders?.length || 0;
+    const firebaseDay = snapshot.exists() ? firebaseDayToLocal(snapshot.val(), todayStr()) : null;
+    const firebaseCount = firebaseDay?.orders?.length || 0;
+
+    if (firebaseCount > localCount) {
+      // Firebase nhiều hơn → kéo về (thiết bị khác quét hoặc vừa reconnect)
+      scanDataCache[todayStr()] = firebaseDay;
+      idbSaveDay(firebaseDay);
+      renderBatches();
+      renderTodayList(getDayOrders(todayStr()));
+    } else if (localCount > firebaseCount && localDay) {
+      // Local nhiều hơn → đẩy lên (đơn quét lúc offline chưa sync)
+      set(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), localDay)
+        .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err));
     }
   });
 }
