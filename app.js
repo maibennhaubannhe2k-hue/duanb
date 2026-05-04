@@ -572,8 +572,19 @@ function renderClosedBatches(dateStr) {
       <td><strong>${b.carrier}</strong></td>
       <td style="color:blue;font-weight:bold;">${b.id}</td>
       <td style="font-size:16px;font-weight:bold;color:#10b981;">${exactCount} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
-      <td><button onclick="downloadBatch('${b.id}','${b.carrier}','${b.date}','${b.createdDate || b.date}')" style="background:#3b82f6;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;">📥 Tải File Xe Này</button></td>
+      <td style="white-space:nowrap;"></td>
     `;
+    const actionTd = tr.lastElementChild;
+    const dlBtn = document.createElement("button");
+    dlBtn.textContent = "📥 Tải File Xe Này";
+    dlBtn.style.cssText = "background:#3b82f6;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;margin-right:6px;";
+    dlBtn.onclick = () => downloadBatch(b.id, b.carrier, b.date, b.createdDate || b.date);
+    const pdfBtn = document.createElement("button");
+    pdfBtn.textContent = "📄 Biên Bản";
+    pdfBtn.style.cssText = "background:#7c3aed;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;";
+    pdfBtn.onclick = () => exportBatchPDF(b.id, b.carrier, b.date, b.createdDate || b.date);
+    actionTd.appendChild(dlBtn);
+    actionTd.appendChild(pdfBtn);
     body.appendChild(tr);
   });
 }
@@ -677,15 +688,6 @@ function groupByCarrier(orders) {
   return orders.reduce((acc, o) => { acc[o.carrier] = acc[o.carrier] || []; acc[o.carrier].push(o); return acc; }, {});
 }
 
-function deduplicateClosedBatches(batches) {
-  const seen = new Set();
-  return batches.filter(b => {
-    const key = `${b.id}|${b.carrier}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 function getCancelledSet() { return new Set(JSON.parse(localStorage.getItem(CANCELED_KEY)) || []); }
 function saveCancelledSet(list) { const unique = [...new Set(list)]; localStorage.setItem(CANCELED_KEY, JSON.stringify(unique)); set(ref(db, CANCELED_KEY), unique); }
@@ -772,4 +774,125 @@ function scheduleMidnightReset() {
     showAllTodayOrders = false;
     scheduleMidnightReset();
   }, nextMidnight - now);
+}
+
+// === XUẤT BIÊN BẢN PDF ===
+window.exportBatchPDF = function(batchId, carrier, dateStr, createdDate) {
+  const fromDate = createdDate || dateStr;
+  const orders = Object.values(scanDataCache)
+    .filter(day => day.date >= fromDate && day.date <= dateStr)
+    .flatMap(day => day.orders || [])
+    .filter(o => o.batchId === batchId && o.carrier === carrier && o.status === STATUS.SUCCESS);
+  if (orders.length === 0) { alert("Không có đơn hàng hợp lệ trong xe này!"); return; }
+
+  const saved = JSON.parse(localStorage.getItem("pdf_shop_info") || "{}");
+  const overlay = document.createElement("div");
+  overlay.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;";
+  overlay.innerHTML = `
+    <div style="background:white;padding:24px;border-radius:12px;width:420px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+      <h3 style="margin:0 0 4px;font-size:16px;">📄 Xuất Biên Bản Bàn Giao</h3>
+      <p style="margin:0 0 14px;font-size:13px;color:#888;">Xe: <b>${batchId}</b> &bull; ${carrier} &bull; ${dateStr} &bull; <b>${orders.length} đơn</b></p>
+      <label style="font-size:12px;font-weight:bold;color:#555;display:block;margin-bottom:3px;">Tên Shop *</label>
+      <input id="pdf-shop" type="text" value="${saved.shop || ""}" placeholder="Tên shop của bạn..."
+        style="width:100%;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;font-size:14px;margin-bottom:10px;">
+      <label style="font-size:12px;font-weight:bold;color:#555;display:block;margin-bottom:3px;">Địa chỉ kho</label>
+      <input id="pdf-addr" type="text" value="${saved.addr || ""}" placeholder="Địa chỉ..."
+        style="width:100%;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;font-size:14px;margin-bottom:10px;">
+      <label style="font-size:12px;font-weight:bold;color:#555;display:block;margin-bottom:3px;">Điện thoại</label>
+      <input id="pdf-phone" type="text" value="${saved.phone || ""}" placeholder="Số điện thoại..."
+        style="width:100%;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;font-size:14px;margin-bottom:16px;">
+      <div style="display:flex;gap:8px;">
+        <button id="pdf-cancel-btn" style="flex:1;padding:10px;border:1.5px solid #ddd;border-radius:6px;background:white;cursor:pointer;font-size:14px;">Hủy</button>
+        <button id="pdf-ok-btn" style="flex:2;padding:10px;background:#7c3aed;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:bold;font-size:14px;">📄 Tạo Biên Bản</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  document.getElementById("pdf-shop").focus();
+  document.getElementById("pdf-cancel-btn").onclick = () => document.body.removeChild(overlay);
+  overlay.addEventListener("click", e => { if (e.target === overlay) document.body.removeChild(overlay); });
+  document.getElementById("pdf-ok-btn").onclick = () => {
+    const shop = document.getElementById("pdf-shop").value.trim();
+    if (!shop) { document.getElementById("pdf-shop").style.borderColor = "red"; document.getElementById("pdf-shop").focus(); return; }
+    const addr = document.getElementById("pdf-addr").value.trim();
+    const phone = document.getElementById("pdf-phone").value.trim();
+    localStorage.setItem("pdf_shop_info", JSON.stringify({ shop, addr, phone }));
+    document.body.removeChild(overlay);
+    printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders);
+  };
+};
+
+function printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders) {
+  const now = new Date().toLocaleString("vi-VN");
+  const sysId = `#${Math.floor(100000 + Math.random() * 900000)}`;
+  const total = orders.length;
+  const COLS = 4;
+  let rows = "";
+  for (let i = 0; i < orders.length; i += COLS) {
+    rows += "<tr>";
+    for (let g = 0; g < COLS; g++) {
+      const o = orders[i + g];
+      if (o) rows += `<td class="stt">${i+g+1}</td><td class="code">${o.code}</td>`;
+      else    rows += `<td></td><td></td>`;
+    }
+    rows += "</tr>";
+  }
+  const addrLine  = addr  ? `<div class="info-addr">Địa chỉ: ${addr}</div>` : "";
+  const phoneLine = phone ? `<div class="info-addr">Điện thoại: ${phone}</div>` : "";
+  const html = `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8">
+<title>Biên Bản - ${batchId}</title>
+<style>
+  @page{size:A4;margin:8mm}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:Arial,sans-serif;font-size:9pt;color:#000;background:#fff}
+  .title{text-align:center;font-size:15pt;font-weight:bold;margin-bottom:3px}
+  .subtitle{text-align:center;font-size:7pt;color:#888;margin-bottom:4px}
+  hr{border:none;border-top:1.5px solid #4472C4;margin-bottom:5px}
+  .info{width:100%;border-collapse:collapse;margin-bottom:5px}
+  .info td{border:.5px solid #ccc;padding:5px 7px;vertical-align:top}
+  .info .l{background:#F8F9FF;width:52%}
+  .info .r{background:#F0F4FF;width:48%}
+  .lbl{font-size:7pt;color:#666;margin-bottom:3px}
+  .val{font-weight:bold;font-size:9pt;margin-bottom:2px}
+  .info-addr{color:#3366CC;font-size:8pt;margin-top:1px}
+  .badge{background:#1a1a1a;color:#fff;text-align:center;font-weight:bold;font-size:10pt;padding:5px 6px;border-radius:4px;margin-top:7px}
+  .ct{width:100%;border-collapse:collapse;margin-bottom:5px}
+  .ct th{background:#4472C4;color:#fff;font-weight:bold;font-size:7pt;text-align:center;padding:3px 2px;border:.3px solid #aaa}
+  .ct td{font-size:8pt;padding:2px 3px;border:.3px solid #ccc}
+  .ct tr:nth-child(even) td{background:#F0F4FF}
+  .stt{text-align:center;color:#999;width:7mm}
+  .code{font-weight:bold}
+  .sig{width:100%;border-collapse:collapse}
+  .sig td{border:.5px solid #ccc;padding:5px 6px;text-align:center;width:33.33%}
+  .sg{background:#FFF8F0}.sm{background:#fff;font-size:6pt;color:#999;vertical-align:middle}.sr{background:#F0FFF0}
+  .sh{font-weight:bold;font-size:8pt;margin-bottom:2px}
+  .ss{font-size:7pt;color:#888}
+  .sl{margin-top:22px;font-size:8pt;color:#555}
+  @media print{button{display:none}}
+</style></head><body>
+<div class="title">BIÊN BẢN BÀN GIAO VẬN ĐƠN</div>
+<div class="subtitle">In vào: ${now} &bull; ID: ${sysId}</div>
+<hr>
+<table class="info"><tr>
+  <td class="l"><div class="lbl">ĐƠN VỊ GỬI HÀNG</div><div class="val">${shop}</div>${addrLine}${phoneLine}</td>
+  <td class="r"><div class="lbl">ĐƠN VỊ TIẾP NHẬN</div>
+    <div class="val">ĐVVC: ${carrier}</div>
+    <div class="val">Lô/Xe: ${batchId}</div>
+    <div class="val">Ngày: ${dateStr}</div>
+    <div class="badge">TỔNG SỐ: ${total} ĐƠN HÀNG</div></td>
+</tr></table>
+<table class="ct"><thead><tr>
+  <th>STT</th><th>MÃ VẬN ĐƠN</th><th>STT</th><th>MÃ VẬN ĐƠN</th>
+  <th>STT</th><th>MÃ VẬN ĐƠN</th><th>STT</th><th>MÃ VẬN ĐƠN</th>
+</tr></thead><tbody>${rows}</tbody></table>
+<table class="sig"><tr>
+  <td class="sg"><div class="sh">BÊN GIAO</div><div class="ss">(Ký, ghi rõ họ tên)</div><div class="sl">.................................</div></td>
+  <td class="sm">In vào: ${now}<br>${sysId}</td>
+  <td class="sr"><div class="sh">BÊN NHẬN</div><div class="ss">(Ký, ghi rõ họ tên)</div><div class="sl">.................................</div></td>
+</tr></table>
+<script>window.onload=()=>window.print();<\/script>
+</body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) { alert("Trình duyệt chặn popup! Vui lòng cho phép popup và thử lại."); return; }
+  w.document.write(html);
+  w.document.close();
 }
