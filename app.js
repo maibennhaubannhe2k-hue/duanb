@@ -34,6 +34,7 @@ let currentFilter = { mode: "single", singleDate: todayStr() };
 let carrierChart = null;
 let activePage = "scanPage";
 let showAllTodayOrders = false;
+let lastSyncTs = 0;
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
@@ -158,6 +159,7 @@ async function init() {
   renderBatches();
 
   subscribeToTodayScan();
+  syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
 
   onValue(ref(db, CANCELED_KEY), (snapshot) => {
     const data = snapshot.val();
@@ -343,6 +345,11 @@ function bindEvents() {
     });
     exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
+
+  // Khi tab active trở lại (mở khoá máy, chuyển tab...) → tự sync offline data
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) syncLocalToFirebase();
+  });
 }
 
 // === 6. QUÉT MÃ ===
@@ -779,6 +786,39 @@ function scheduleMidnightReset() {
     showAllTodayOrders = false;
     scheduleMidnightReset();
   }, nextMidnight - now);
+}
+
+// === SYNC OFFLINE DATA LÊN FIREBASE ===
+// So sánh IDB local vs Firebase, ngày nào local nhiều hơn thì đẩy lên
+// Throttle 5 phút để tránh gọi liên tục khi chuyển tab
+async function syncLocalToFirebase() {
+  if (Date.now() - lastSyncTs < 5 * 60 * 1000) return;
+  lastSyncTs = Date.now();
+
+  const dates = Object.keys(scanDataCache)
+    .filter(d => (scanDataCache[d]?.orders?.length || 0) > 0)
+    .sort().reverse().slice(0, 30); // tối đa 30 ngày gần nhất
+  if (dates.length === 0) return;
+
+  try {
+    const snapshots = await Promise.all(
+      dates.map(d => get(ref(db, `${FIREBASE_SCAN_KEY}/${d}`)).catch(() => null))
+    );
+    snapshots.forEach((snap, i) => {
+      const date = dates[i];
+      const localDay = scanDataCache[date];
+      const localCount = localDay?.orders?.length || 0;
+      const fbCount = snap?.exists()
+        ? (firebaseDayToLocal(snap.val(), date)?.orders?.length || 0) : 0;
+      if (localCount > fbCount) {
+        set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), localDay)
+          .catch(e => console.error(`Lỗi sync ${date}:`, e));
+        console.log(`[Sync] ${date}: ${fbCount} → ${localCount} đơn`);
+      }
+    });
+  } catch (e) {
+    console.error("Lỗi syncLocalToFirebase:", e);
+  }
 }
 
 // === XUẤT BIÊN BẢN PDF ===
