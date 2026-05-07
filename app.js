@@ -771,6 +771,7 @@ function renderCarrierTable(orders) {
 }
 
 let unsubscribeTodayScan = null;
+let isBatchPushing = false;
 
 function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
@@ -791,12 +792,16 @@ function subscribeToTodayScan() {
         renderBatches();
         renderTodayList(getDayOrders(todayStr()));
       }
-    } else if (localOrders.length > firebaseOrders.length) {
-      // Local nhiều hơn → chỉ push từng đơn còn thiếu (không dùng set để tránh race condition với push online)
+    } else if (localOrders.length > firebaseOrders.length && !isBatchPushing) {
+      // Local nhiều hơn → push đơn còn thiếu, dùng flag tránh cascade listener
       const fbKeys = new Set(firebaseOrders.map(o => `${o.code}|${o.time}`));
       const missing = localOrders.filter(o => !fbKeys.has(`${o.code}|${o.time}`));
-      missing.forEach(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}/orders`), o)
-        .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err)));
+      if (missing.length > 0) {
+        isBatchPushing = true;
+        Promise.all(missing.map(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}/orders`), o)
+          .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err))))
+          .finally(() => { isBatchPushing = false; });
+      }
     }
   });
 }
