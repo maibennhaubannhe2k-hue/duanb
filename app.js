@@ -76,8 +76,23 @@ async function idbLoadAll() {
     const req = idb.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).getAll();
     req.onsuccess = () => {
       scanDataCache = {};
-      req.result.forEach(item => { scanDataCache[item.date] = item; });
+      const dirty = [];
+      req.result.forEach(item => {
+        const origLen = item.orders?.length || 0;
+        if (origLen > 0) {
+          const seen = new Set();
+          item.orders = item.orders.filter(o => {
+            const key = `${o.code}|${o.time}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+          if (item.orders.length < origLen) dirty.push(item);
+        }
+        scanDataCache[item.date] = item;
+      });
       resolve();
+      dirty.forEach(day => idbSaveDay(day));
     };
     req.onerror = () => reject(req.error);
   });
@@ -135,7 +150,7 @@ async function init() {
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
     const missingDays = [];
-    for (let i = 1; i < 7; i++) {
+    for (let i = 1; i <= 10; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = localDateStr(d);
@@ -371,20 +386,20 @@ function handleScan(code) {
 
   if (!canceledSet.has(code) && !activeBatch) {
     showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error");
-    playTone("error");
-    setTimeout(() => speak(`Chưa tạo xe ${carrier}`), 400);
+    playTone("error", `Chưa tạo xe ${carrier}`);
     return;
   }
 
-  const last5Days = [];
-  for (let i = 0; i < 5; i++) {
+  let duplicateOriginal = null;
+  for (let i = 0; i < 10; i++) {
     const d = new Date(); d.setDate(d.getDate() - i);
-    last5Days.push(localDateStr(d));
+    const dayData = scanDataCache[localDateStr(d)];
+    if (dayData) {
+      const found = dayData.orders.find(o => o.code === code && o.status === STATUS.SUCCESS);
+      if (found) { duplicateOriginal = found; break; }
+    }
   }
-  const isDuplicateIn5Days = last5Days.some(dStr => {
-    const dayData = scanDataCache[dStr];
-    return dayData && dayData.orders.some(o => o.code === code && o.status === STATUS.SUCCESS);
-  });
+  const isDuplicate = duplicateOriginal !== null;
 
   const day = scanDataCache[date] || { date, orders: [] };
   let status;
@@ -392,13 +407,13 @@ function handleScan(code) {
   if (canceledSet.has(code)) {
     status = STATUS.CANCELED;
     showMessage("❌ ĐƠN HỦY - DỪNG LẠI", "error");
-    playTone("error");
-    setTimeout(() => speak("Đơn hủy"), 400);
-  } else if (isDuplicateIn5Days) {
+    playTone("error", "Đơn hủy");
+  } else if (isDuplicate) {
     status = STATUS.DUPLICATE;
-    showMessage("⚠️ TRÙNG ĐƠN (Trong 5 ngày qua)", "warning");
+    const diffDays = Math.floor((Date.now() - new Date(duplicateOriginal.time)) / 86400000);
+    const daysText = diffDays === 0 ? "hôm nay" : `${diffDays} ngày trước`;
+    showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})`, "warning");
     playTone("warning");
-    setTimeout(() => speak("Đơn trùng"), 400);
   } else {
     status = STATUS.SUCCESS;
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
@@ -643,18 +658,21 @@ function renderChart(orders) {
 function firebaseDayToLocal(fbDay, date) {
   if (!fbDay) return null;
   const raw = fbDay.orders || {};
-  const orders = Array.isArray(raw) ? raw : Object.values(raw);
+  const rawOrders = Array.isArray(raw) ? raw : Object.values(raw);
+  const seen = new Set();
+  const orders = rawOrders.filter(o => {
+    const key = `${o.code}|${o.time}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return { date: fbDay.date || date, orders };
 }
 
 function saveAllData(date, dayData, newOrder) {
   idbSaveDay(dayData);
-  if (newOrder) {
-    if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date);
-    push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
-  } else {
-    set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), dayData);
-  }
+  if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date);
+  push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
 }
 
 function getDayOrders(date) { return scanDataCache[date]?.orders || []; }
@@ -715,11 +733,12 @@ const audioCache = {
   error: new Audio("donhuy.wav")
 };
 
-function playTone(kind) {
+function playTone(kind, speakText) {
   const audio = audioCache[kind];
-  if (!audio) return;
+  if (!audio) { if (speakText) speak(speakText); return; }
   audio.currentTime = 0;
-  audio.play().catch(() => {});
+  audio.onended = speakText ? () => speak(speakText) : null;
+  audio.play().catch(() => { if (speakText) speak(speakText); });
 }
 
 const utterance = ('speechSynthesis' in window) ? new SpeechSynthesisUtterance() : null;
@@ -757,20 +776,27 @@ function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
   unsubscribeTodayScan = onValue(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), (snapshot) => {
     const localDay = scanDataCache[todayStr()];
-    const localCount = localDay?.orders?.length || 0;
+    const localOrders = localDay?.orders || [];
     const firebaseDay = snapshot.exists() ? firebaseDayToLocal(snapshot.val(), todayStr()) : null;
-    const firebaseCount = firebaseDay?.orders?.length || 0;
+    const firebaseOrders = firebaseDay?.orders || [];
 
-    if (firebaseCount > localCount) {
-      // Firebase nhiều hơn → kéo về (thiết bị khác quét hoặc vừa reconnect)
-      scanDataCache[todayStr()] = firebaseDay;
-      idbSaveDay(firebaseDay);
-      renderBatches();
-      renderTodayList(getDayOrders(todayStr()));
-    } else if (localCount > firebaseCount && localDay) {
-      // Local nhiều hơn → đẩy lên (đơn quét lúc offline chưa sync)
-      set(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), localDay)
-        .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err));
+    if (firebaseOrders.length > localOrders.length) {
+      // Firebase nhiều hơn → merge vào local (không overwrite để giữ data local)
+      const localKeys = new Set(localOrders.map(o => `${o.code}|${o.time}`));
+      const newFromFb = firebaseOrders.filter(o => !localKeys.has(`${o.code}|${o.time}`));
+      if (newFromFb.length > 0) {
+        const merged = { date: todayStr(), orders: [...localOrders, ...newFromFb] };
+        scanDataCache[todayStr()] = merged;
+        idbSaveDay(merged);
+        renderBatches();
+        renderTodayList(getDayOrders(todayStr()));
+      }
+    } else if (localOrders.length > firebaseOrders.length) {
+      // Local nhiều hơn → chỉ push từng đơn còn thiếu (không dùng set để tránh race condition với push online)
+      const fbKeys = new Set(firebaseOrders.map(o => `${o.code}|${o.time}`));
+      const missing = localOrders.filter(o => !fbKeys.has(`${o.code}|${o.time}`));
+      missing.forEach(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}/orders`), o)
+        .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err)));
     }
   });
 }
@@ -797,7 +823,7 @@ async function syncLocalToFirebase() {
 
   const dates = Object.keys(scanDataCache)
     .filter(d => (scanDataCache[d]?.orders?.length || 0) > 0)
-    .sort().reverse().slice(0, 30); // tối đa 30 ngày gần nhất
+    .sort().reverse().slice(0, 30);
   if (dates.length === 0) return;
 
   try {
@@ -806,14 +832,14 @@ async function syncLocalToFirebase() {
     );
     snapshots.forEach((snap, i) => {
       const date = dates[i];
-      const localDay = scanDataCache[date];
-      const localCount = localDay?.orders?.length || 0;
-      const fbCount = snap?.exists()
-        ? (firebaseDayToLocal(snap.val(), date)?.orders?.length || 0) : 0;
-      if (localCount > fbCount) {
-        set(ref(db, `${FIREBASE_SCAN_KEY}/${date}`), localDay)
-          .catch(e => console.error(`Lỗi sync ${date}:`, e));
-        console.log(`[Sync] ${date}: ${fbCount} → ${localCount} đơn`);
+      const localOrders = scanDataCache[date]?.orders || [];
+      const firebaseOrders = snap?.exists() ? (firebaseDayToLocal(snap.val(), date)?.orders || []) : [];
+      const fbKeys = new Set(firebaseOrders.map(o => `${o.code}|${o.time}`));
+      const missing = localOrders.filter(o => !fbKeys.has(`${o.code}|${o.time}`));
+      if (missing.length > 0) {
+        missing.forEach(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), o)
+          .catch(e => console.error(`Lỗi sync ${date}:`, e)));
+        console.log(`[Sync] ${date}: push ${missing.length} đơn còn thiếu`);
       }
     });
   } catch (e) {
