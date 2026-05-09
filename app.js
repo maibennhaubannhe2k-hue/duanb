@@ -78,6 +78,7 @@ async function idbLoadAll() {
       scanDataCache = {};
       const dirty = [];
       req.result.forEach(item => {
+        if (!item || !item.date) return;
         const origLen = item.orders?.length || 0;
         if (origLen > 0) {
           const seen = new Set();
