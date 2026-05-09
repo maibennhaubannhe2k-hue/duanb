@@ -583,17 +583,12 @@ function renderClosedBatches(dateStr) {
   }
   if (downloadBtn) downloadBtn.style.display = "inline-block";
   [...batchesForDate].reverse().forEach(b => {
-    const fromDate = b.createdDate || b.date;
-    const exactCount = Object.values(scanDataCache)
-      .filter(day => day.date >= fromDate && day.date <= b.date)
-      .flatMap(day => day.orders || [])
-      .filter(o => o.batchId === b.id && o.carrier === b.carrier && o.status === STATUS.SUCCESS).length;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><input type="checkbox" class="batch-checkbox" data-id="${b.id}" data-carrier="${b.carrier}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
       <td><strong>${b.carrier}</strong></td>
       <td style="color:blue;font-weight:bold;">${b.id}</td>
-      <td style="font-size:16px;font-weight:bold;color:#10b981;">${exactCount} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
+      <td style="font-size:16px;font-weight:bold;color:#10b981;">${b.count} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
       <td style="white-space:nowrap;"></td>
     `;
     const actionTd = tr.lastElementChild;
