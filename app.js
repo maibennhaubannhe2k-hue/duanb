@@ -328,7 +328,7 @@ function bindEvents() {
     if (terms.length === 0) return;
     let results = [];
     Object.keys(scanDataCache).forEach(date => {
-      results = results.concat(scanDataCache[date].orders.filter(o => terms.some(t => o.code.toLowerCase().includes(t))));
+      results = results.concat((scanDataCache[date].orders || []).filter(o => o && terms.some(t => o.code.toLowerCase().includes(t))));
     });
     renderHistoryTable(results, `Kết quả tìm kiếm: ${terms.join(", ")}`);
   });
@@ -654,7 +654,7 @@ function renderChart(orders) {
 function firebaseDayToLocal(fbDay, date) {
   if (!fbDay) return null;
   const raw = fbDay.orders || {};
-  const rawOrders = Array.isArray(raw) ? raw : Object.values(raw);
+  const rawOrders = (Array.isArray(raw) ? raw : Object.values(raw)).filter(Boolean);
   const seen = new Set();
   const orders = rawOrders.filter(o => {
     const key = `${o.code}|${o.time}`;
