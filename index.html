@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="styles.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
   <header>
@@ -19,6 +20,7 @@
       <button class="page-tab" data-page="dashboardPage">Dashboard</button>
       <button class="page-tab" data-page="cancelledPage">Đơn hủy</button>
       <button class="page-tab" data-page="historyPage">History</button>
+      <button class="page-tab" data-page="cancelScanPage" style="background:#ef4444;">Tra Đơn Hủy</button>
     </nav>
 
     <section id="scanPage" class="app-page active">
@@ -223,8 +225,74 @@ G12345678"></textarea>
         </div>
       </section>
     </section>
+    <section id="cancelScanPage" class="app-page">
+      <section class="card" style="border-top:5px solid #ef4444;">
+        <h2 style="color:#ef4444;margin-top:0;">🔍 Tra Cứu Đơn Hủy Xe</h2>
+        <p style="color:#64748b;font-size:14px;margin-bottom:16px;">Quét hoặc nhập mã vận đơn bị hủy để biết vị trí STT trong biên bản bàn giao.</p>
+
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <input id="cancelScanInput" type="text" placeholder="Nhập mã hoặc quét barcode → Enter"
+            autocomplete="off" style="flex:1;padding:12px;font-size:16px;">
+          <button id="cancelScanClearBtn" style="background:#ef4444;color:white;padding:12px 14px;border:none;border-radius:6px;cursor:pointer;font-size:14px;">🗑 Xóa DS</button>
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <button id="startCameraBtn" style="background:#3b82f6;color:white;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;">📷 Bật Camera Quét</button>
+          <button id="stopCameraBtn" style="background:#64748b;color:white;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;display:none;">⏹ Tắt Camera</button>
+        </div>
+
+        <div id="cancelScanReader" style="width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;"></div>
+        <div id="cancelScanMessage" style="display:none;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-weight:bold;font-size:15px;"></div>
+
+        <div id="cancelScanResultsWrap" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+            <strong style="font-size:15px;">Danh sách đã quét: <span id="cancelScanCount">0</span> đơn</strong>
+            <button id="saveCancelReturnBtn" style="background:#10b981;color:white;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">💾 Lưu danh sách ngày hôm nay</button>
+          </div>
+          <div style="overflow-x:auto;">
+            <table style="font-size:14px;">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Mã đơn</th>
+                  <th>Lô/Xe</th>
+                  <th>DVVC</th>
+                  <th>STT trong biên bản</th>
+                </tr>
+              </thead>
+              <tbody id="cancelScanBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <hr style="margin:24px 0;border-color:#fecaca;">
+
+        <h2 style="color:#ef4444;margin-top:0;">📋 Lịch Sử Đơn Hủy Trả Về</h2>
+        <div style="margin-bottom:12px;">
+          <label style="font-weight:bold;color:#ef4444;">📅 Chọn ngày xem:</label>
+          <input id="cancelReturnDatePicker" type="date" style="margin-left:8px;padding:8px;font-size:15px;">
+        </div>
+        <h3 id="cancelReturnTitle" style="font-size:14px;color:#64748b;margin-bottom:8px;">Chọn ngày để xem</h3>
+        <div style="overflow-x:auto;">
+          <table style="font-size:14px;">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Mã đơn</th>
+                <th>Lô/Xe</th>
+                <th>DVVC</th>
+                <th>STT trong biên bản</th>
+              </tr>
+            </thead>
+            <tbody id="cancelReturnBody">
+              <tr><td colspan="5" style="text-align:center;">Vui lòng chọn ngày để xem</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
   </main>
 
-  <script type="module" src="app.js?v=23"></script>
+  <script type="module" src="app.js?v=25"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ const CANCELED_KEY = "warehouse_cancelled_orders_v1";
 const ACTIVE_BATCH_KEY = "warehouse_active_batches_v2";
 const ACTIVE_BATCH_LOCAL_KEY = "warehouse_active_batches_local";
 const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1";
+const CANCEL_RETURN_KEY = "warehouse_cancel_return_v1";
 
 // IndexedDB — lưu đơn hàng không giới hạn dung lượng
 const IDB_NAME = "warehouse_db";
@@ -35,6 +36,14 @@ let carrierChart = null;
 let activePage = "scanPage";
 let showAllTodayOrders = false;
 let lastSyncTs = 0;
+
+// Tra cứu đơn hủy xe
+let cancelScanList = [];
+let html5QrScanner = null;
+let isCameraRunning = false;
+let lastCamCode = "";
+let lastCamTime = 0;
+let cancelReturnCache = {};
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
@@ -151,7 +160,7 @@ async function init() {
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
     const missingDays = [];
-    for (let i = 1; i <= 10; i++) {
+    for (let i = 1; i <= 45; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = localDateStr(d);
@@ -176,6 +185,10 @@ async function init() {
 
   subscribeToTodayScan();
   syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
+
+  onValue(ref(db, `${CANCEL_RETURN_KEY}/${todayStr()}`), (snapshot) => {
+    if (snapshot.exists()) cancelReturnCache[todayStr()] = snapshot.val();
+  });
 
   onValue(ref(db, CANCELED_KEY), (snapshot) => {
     const data = snapshot.val();
@@ -365,7 +378,10 @@ function bindEvents() {
   // Khi tab active trở lại (mở khoá máy, chuyển tab...) → tự sync offline data
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) syncLocalToFirebase();
+    if (document.hidden && isCameraRunning) stopCameraScanner();
   });
+
+  bindCancelScanEvents();
 }
 
 // === 6. QUÉT MÃ ===
@@ -690,11 +706,13 @@ function detectCarrier(code) {
 }
 
 function switchPage(pageId) {
+  if (pageId !== "cancelScanPage" && isCameraRunning) stopCameraScanner();
   activePage = pageId;
   document.querySelectorAll(".app-page").forEach(p => p.classList.toggle("active", p.id === pageId));
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
   if (pageId === "scanPage") focusOrderInput();
   if (pageId === "dashboardPage") renderAll();
+  if (pageId === "cancelScanPage") setTimeout(() => document.getElementById("cancelScanInput")?.focus(), 0);
 }
 
 function exportOrdersToExcel(data, fileName) {
@@ -846,6 +864,184 @@ async function syncLocalToFirebase() {
   } catch (e) {
     console.error("Lỗi syncLocalToFirebase:", e);
   }
+}
+
+// === TRA CỨU ĐƠN HỦY XE ===
+function findOrderInBatch(code) {
+  let foundOrder = null;
+  let foundDate = null;
+  for (let i = 0; i < 10; i++) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const dateStr = localDateStr(d);
+    const dayData = scanDataCache[dateStr];
+    if (!dayData) continue;
+    const order = dayData.orders.find(o => o.code === code && o.status === STATUS.SUCCESS);
+    if (order) { foundOrder = order; foundDate = dateStr; break; }
+  }
+  if (!foundOrder) return { found: false, code };
+
+  const { batchId, carrier } = foundOrder;
+  if (!batchId) return { found: true, code, batchId: "-", carrier, stt: "-", total: "-" };
+
+  const closedBatch = closedBatches.find(b => b.id === batchId && b.carrier === carrier);
+  const activeBatch = activeBatches[carrier]?.id === batchId ? activeBatches[carrier] : null;
+  const batch = closedBatch || activeBatch;
+  const fromDate = batch?.createdDate || foundDate;
+  const toDate = closedBatch?.date || todayStr();
+
+  const batchOrders = Object.values(scanDataCache)
+    .filter(day => day.date >= fromDate && day.date <= toDate)
+    .flatMap(day => day.orders || [])
+    .filter(o => o.batchId === batchId && o.carrier === carrier && o.status === STATUS.SUCCESS);
+
+  const stt = batchOrders.findIndex(o => o.code === code) + 1;
+  return { found: true, code, batchId, carrier, stt, total: batchOrders.length };
+}
+
+function handleCancelScan(code) {
+  if (!code) return;
+  if (cancelScanList.some(r => r.code === code)) {
+    showCancelScanMsg(`⚠️ Mã ${code} đã quét rồi!`, "#f59e0b");
+    return;
+  }
+  const result = findOrderInBatch(code);
+  cancelScanList.unshift(result);
+  renderCancelScanResults();
+  if (result.found) {
+    showCancelScanMsg(`✅ ${code} → Lô ${result.batchId} → STT ${result.stt} / ${result.total} đơn`, "#10b981");
+  } else {
+    showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
+  }
+}
+
+function showCancelScanMsg(text, color) {
+  const el = document.getElementById("cancelScanMessage");
+  if (!el) return;
+  el.style.display = "block";
+  el.style.background = color + "20";
+  el.style.color = color;
+  el.style.border = `1px solid ${color}`;
+  el.textContent = text;
+}
+
+function renderCancelScanResults() {
+  const wrap = document.getElementById("cancelScanResultsWrap");
+  const body = document.getElementById("cancelScanBody");
+  const count = document.getElementById("cancelScanCount");
+  if (!wrap || !body) return;
+  if (cancelScanList.length === 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  count.textContent = cancelScanList.length;
+  body.innerHTML = "";
+  cancelScanList.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    tr.style.background = r.found ? "" : "#fef2f2";
+    tr.innerHTML = r.found
+      ? `<td>${i + 1}</td><td><b>${r.code}</b></td><td style="color:blue;font-weight:bold;">${r.batchId}</td><td>${r.carrier}</td><td style="color:#e11d48;font-weight:bold;font-size:16px;">STT ${r.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${r.total} đơn</span></td>`
+      : `<td>${i + 1}</td><td><b>${r.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`;
+    body.appendChild(tr);
+  });
+}
+
+function bindCancelScanEvents() {
+  const input = document.getElementById("cancelScanInput");
+  input?.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      handleCancelScan(input.value.trim());
+      input.value = "";
+    }
+  });
+  document.getElementById("cancelScanClearBtn")?.addEventListener("click", () => {
+    cancelScanList = [];
+    renderCancelScanResults();
+    const msg = document.getElementById("cancelScanMessage");
+    if (msg) msg.style.display = "none";
+  });
+  document.getElementById("startCameraBtn")?.addEventListener("click", startCameraScanner);
+  document.getElementById("stopCameraBtn")?.addEventListener("click", stopCameraScanner);
+  document.getElementById("saveCancelReturnBtn")?.addEventListener("click", saveCancelReturn);
+  document.getElementById("cancelReturnDatePicker")?.addEventListener("change", (e) => {
+    loadAndRenderCancelReturns(e.target.value);
+  });
+}
+
+function startCameraScanner() {
+  if (isCameraRunning) return;
+  if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
+  html5QrScanner = new Html5Qrcode("cancelScanReader");
+  html5QrScanner.start(
+    { facingMode: "environment" },
+    { fps: 10, qrbox: { width: 280, height: 120 } },
+    (decodedText) => {
+      const now = Date.now();
+      if (decodedText === lastCamCode && now - lastCamTime < 2000) return;
+      lastCamCode = decodedText;
+      lastCamTime = now;
+      handleCancelScan(decodedText.trim());
+    },
+    () => {}
+  ).then(() => {
+    isCameraRunning = true;
+    document.getElementById("startCameraBtn").style.display = "none";
+    document.getElementById("stopCameraBtn").style.display = "inline-block";
+  }).catch(err => alert("Không thể bật camera: " + err));
+}
+
+function stopCameraScanner() {
+  if (!isCameraRunning || !html5QrScanner) return;
+  html5QrScanner.stop().then(() => {
+    isCameraRunning = false;
+    html5QrScanner = null;
+    const s = document.getElementById("startCameraBtn");
+    const t = document.getElementById("stopCameraBtn");
+    if (s) s.style.display = "inline-block";
+    if (t) t.style.display = "none";
+  }).catch(() => { isCameraRunning = false; html5QrScanner = null; });
+}
+
+async function saveCancelReturn() {
+  const toSave = cancelScanList.filter(r => r.found && r.stt !== "-");
+  if (toSave.length === 0) { alert("Chưa có đơn hợp lệ để lưu!"); return; }
+  const date = todayStr();
+  const now = new Date().toISOString();
+  const existing = cancelReturnCache[date]?.orders || [];
+  const existingCodes = new Set(existing.map(o => o.code));
+  const newEntries = toSave.filter(r => !existingCodes.has(r.code))
+    .map(r => ({ code: r.code, batchId: r.batchId, carrier: r.carrier, stt: r.stt, total: r.total, time: now }));
+  if (newEntries.length === 0) { showCancelScanMsg("⚠️ Tất cả đơn đã được lưu trước đó!", "#f59e0b"); return; }
+  const merged = [...existing, ...newEntries];
+  cancelReturnCache[date] = { date, orders: merged };
+  try {
+    await set(ref(db, `${CANCEL_RETURN_KEY}/${date}`), { date, orders: merged });
+    showCancelScanMsg(`✅ Đã lưu ${newEntries.length} đơn hủy ngày ${date}`, "#10b981");
+  } catch (err) {
+    showCancelScanMsg("❌ Lỗi lưu Firebase, vui lòng thử lại!", "#ef4444");
+  }
+}
+
+async function loadAndRenderCancelReturns(date) {
+  const body = document.getElementById("cancelReturnBody");
+  const title = document.getElementById("cancelReturnTitle");
+  if (!body || !title) return;
+  if (!cancelReturnCache[date]) {
+    try {
+      const snap = await get(ref(db, `${CANCEL_RETURN_KEY}/${date}`));
+      if (snap.exists()) cancelReturnCache[date] = snap.val();
+    } catch (e) {}
+  }
+  const orders = cancelReturnCache[date]?.orders || [];
+  title.textContent = `Đơn Hủy Trả Về: ${orders.length} đơn`;
+  body.innerHTML = "";
+  if (orders.length === 0) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;">Không có đơn hủy trả về trong ngày này</td></tr>`;
+    return;
+  }
+  orders.forEach((o, i) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
+    body.appendChild(tr);
+  });
 }
 
 // === XUẤT BIÊN BẢN PDF ===
