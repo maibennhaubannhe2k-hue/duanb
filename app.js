@@ -997,6 +997,13 @@ function startCameraScanner() {
     document.getElementById("stopCameraBtn").style.display = "inline-block";
     const reader = document.getElementById("cancelScanReader");
     reader.style.position = "relative";
+    const videoEl = reader.querySelector("video");
+    if (videoEl) {
+      videoEl.setAttribute("playsinline", "");
+      videoEl.setAttribute("webkit-playsinline", "");
+      videoEl.setAttribute("disablePictureInPicture", "");
+      videoEl.setAttribute("x-webkit-airplay", "deny");
+    }
     const overlay = document.createElement("div");
     overlay.id = "scanLineOverlay";
     overlay.className = "scan-line-overlay";
