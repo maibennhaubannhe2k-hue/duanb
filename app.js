@@ -45,7 +45,6 @@ let lastCamCode = "";
 let lastCamTime = 0;
 let cancelReturnCache = {};
 let scanMsgTimer = null;
-let scanToastTimer = null;
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
@@ -904,7 +903,6 @@ function handleCancelScan(code) {
   if (!code) return;
   if (cancelScanList.some(r => r.code === code)) {
     showCancelScanMsg(`⚠️ Mã ${code} đã quét rồi!`, "#f59e0b");
-    showScanToast(`⚠️ ${code} đã quét rồi!`, "#d97706");
     return;
   }
   const result = findOrderInBatch(code);
@@ -912,7 +910,6 @@ function handleCancelScan(code) {
   renderCancelScanResults();
   if (result.found) {
     showCancelScanMsg(`✅ Đã quét thành công: ${code}`, "#10b981");
-    showScanToast(`✅ Đã quét: ${code}`, "#059669");
     playTone("success");
     clearTimeout(scanMsgTimer);
     scanMsgTimer = setTimeout(() => {
@@ -921,19 +918,8 @@ function handleCancelScan(code) {
     }, 1000);
   } else {
     showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
-    showScanToast(`❌ Không tìm thấy: ${code}`, "#dc2626");
     playTone("error");
   }
-}
-
-function showScanToast(text, bg) {
-  const toast = document.getElementById("scanToast");
-  if (!toast) return;
-  toast.style.background = bg;
-  toast.style.display = "block";
-  toast.textContent = text;
-  clearTimeout(scanToastTimer);
-  scanToastTimer = setTimeout(() => { toast.style.display = "none"; }, 1000);
 }
 
 function showCancelScanMsg(text, color) {
@@ -991,14 +977,12 @@ function bindCancelScanEvents() {
 function startCameraScanner() {
   if (isCameraRunning) return;
   if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
-
-  const qrW = Math.min(Math.floor(window.innerWidth * 0.9), 500);
-  const qrH = Math.floor(qrW * 0.45);
-
-  html5QrScanner = new Html5Qrcode("cancelScanReader", { formatsToSupport: [0, 3, 5, 9, 10] });
+  html5QrScanner = new Html5Qrcode("cancelScanReader", {
+    formatsToSupport: [0, 3, 5, 9, 10]
+  });
   html5QrScanner.start(
     { facingMode: "environment" },
-    { fps: 15, qrbox: { width: qrW, height: qrH } },
+    { fps: 15, qrbox: { width: 320, height: 160 } },
     (decodedText) => {
       const now = Date.now();
       if (decodedText === lastCamCode && now - lastCamTime < 2000) return;
@@ -1010,36 +994,14 @@ function startCameraScanner() {
   ).then(() => {
     isCameraRunning = true;
     document.getElementById("startCameraBtn").style.display = "none";
-
-    // Ẩn header + nav để camera chiếm toàn màn hình
-    document.querySelector("header")?.style.setProperty("display", "none");
-    document.querySelector(".page-nav")?.style.setProperty("display", "none");
-
+    document.getElementById("stopCameraBtn").style.display = "inline-block";
     const reader = document.getElementById("cancelScanReader");
     reader.style.position = "relative";
-    reader.style.maxWidth = "none";
-    reader.style.width = "100%";
-    reader.style.borderRadius = "0";
-
     const overlay = document.createElement("div");
     overlay.id = "scanLineOverlay";
     overlay.className = "scan-line-overlay";
     overlay.innerHTML = '<div class="scan-line"></div>';
     reader.appendChild(overlay);
-
-    const toast = document.createElement("div");
-    toast.id = "scanToast";
-    toast.style.cssText = "position:absolute;top:14px;left:4%;right:4%;padding:12px 16px;border-radius:10px;font-weight:bold;font-size:18px;text-align:center;color:#fff;display:none;z-index:20;";
-    reader.appendChild(toast);
-
-    const closeBtn = document.createElement("button");
-    closeBtn.id = "cameraCloseBtn";
-    closeBtn.textContent = "✕ Tắt Camera";
-    closeBtn.style.cssText = "position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:30;background:rgba(0,0,0,0.65);color:white;border:none;border-radius:10px;padding:14px 32px;font-size:17px;font-weight:bold;cursor:pointer;";
-    closeBtn.onclick = stopCameraScanner;
-    reader.appendChild(closeBtn);
-
-    reader.scrollIntoView({ behavior: "smooth", block: "start" });
   }).catch(err => alert("Không thể bật camera: " + err));
 }
 
@@ -1048,23 +1010,12 @@ function stopCameraScanner() {
   html5QrScanner.stop().then(() => {
     isCameraRunning = false;
     html5QrScanner = null;
-    const reader = document.getElementById("cancelScanReader");
-    if (reader) reader.style.cssText = "width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;";
-    document.querySelector("header")?.style.removeProperty("display");
-    document.querySelector(".page-nav")?.style.removeProperty("display");
     const s = document.getElementById("startCameraBtn");
+    const t = document.getElementById("stopCameraBtn");
     if (s) s.style.display = "inline-block";
+    if (t) t.style.display = "none";
     document.getElementById("scanLineOverlay")?.remove();
-    document.getElementById("scanToast")?.remove();
-    document.getElementById("cameraCloseBtn")?.remove();
-  }).catch(() => {
-    isCameraRunning = false;
-    html5QrScanner = null;
-    const reader = document.getElementById("cancelScanReader");
-    if (reader) reader.style.cssText = "width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;";
-    document.querySelector("header")?.style.removeProperty("display");
-    document.querySelector(".page-nav")?.style.removeProperty("display");
-  });
+  }).catch(() => { isCameraRunning = false; html5QrScanner = null; });
 }
 
 async function saveCancelReturn() {
