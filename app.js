@@ -992,11 +992,7 @@ function startCameraScanner() {
   if (isCameraRunning) return;
   if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
 
-  const reader = document.getElementById("cancelScanReader");
-  reader.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100dvh;max-width:none;margin:0;border-radius:0;z-index:1000;background:#000;overflow:hidden;";
-  document.body.style.overflow = "hidden";
-
-  const qrW = Math.min(Math.floor(window.innerWidth * 0.85), 480);
+  const qrW = Math.min(Math.floor(window.innerWidth * 0.9), 500);
   const qrH = Math.floor(qrW * 0.45);
 
   html5QrScanner = new Html5Qrcode("cancelScanReader", { formatsToSupport: [0, 3, 5, 9, 10] });
@@ -1015,6 +1011,16 @@ function startCameraScanner() {
     isCameraRunning = true;
     document.getElementById("startCameraBtn").style.display = "none";
 
+    // Ẩn header + nav để camera chiếm toàn màn hình
+    document.querySelector("header")?.style.setProperty("display", "none");
+    document.querySelector(".page-nav")?.style.setProperty("display", "none");
+
+    const reader = document.getElementById("cancelScanReader");
+    reader.style.position = "relative";
+    reader.style.maxWidth = "none";
+    reader.style.width = "100%";
+    reader.style.borderRadius = "0";
+
     const overlay = document.createElement("div");
     overlay.id = "scanLineOverlay";
     overlay.className = "scan-line-overlay";
@@ -1023,20 +1029,18 @@ function startCameraScanner() {
 
     const toast = document.createElement("div");
     toast.id = "scanToast";
-    toast.style.cssText = "position:absolute;top:20px;left:5%;right:5%;padding:12px 16px;border-radius:10px;font-weight:bold;font-size:18px;text-align:center;color:#fff;display:none;z-index:20;";
+    toast.style.cssText = "position:absolute;top:14px;left:4%;right:4%;padding:12px 16px;border-radius:10px;font-weight:bold;font-size:18px;text-align:center;color:#fff;display:none;z-index:20;";
     reader.appendChild(toast);
 
     const closeBtn = document.createElement("button");
     closeBtn.id = "cameraCloseBtn";
     closeBtn.textContent = "✕ Tắt Camera";
-    closeBtn.style.cssText = "position:absolute;bottom:36px;left:50%;transform:translateX(-50%);z-index:30;background:rgba(0,0,0,0.65);color:white;border:none;border-radius:10px;padding:14px 32px;font-size:17px;font-weight:bold;cursor:pointer;";
+    closeBtn.style.cssText = "position:absolute;bottom:20px;left:50%;transform:translateX(-50%);z-index:30;background:rgba(0,0,0,0.65);color:white;border:none;border-radius:10px;padding:14px 32px;font-size:17px;font-weight:bold;cursor:pointer;";
     closeBtn.onclick = stopCameraScanner;
     reader.appendChild(closeBtn);
-  }).catch(err => {
-    reader.style.cssText = "width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;";
-    document.body.style.overflow = "";
-    alert("Không thể bật camera: " + err);
-  });
+
+    reader.scrollIntoView({ behavior: "smooth", block: "start" });
+  }).catch(err => alert("Không thể bật camera: " + err));
 }
 
 function stopCameraScanner() {
@@ -1046,7 +1050,8 @@ function stopCameraScanner() {
     html5QrScanner = null;
     const reader = document.getElementById("cancelScanReader");
     if (reader) reader.style.cssText = "width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;";
-    document.body.style.overflow = "";
+    document.querySelector("header")?.style.removeProperty("display");
+    document.querySelector(".page-nav")?.style.removeProperty("display");
     const s = document.getElementById("startCameraBtn");
     if (s) s.style.display = "inline-block";
     document.getElementById("scanLineOverlay")?.remove();
@@ -1057,7 +1062,8 @@ function stopCameraScanner() {
     html5QrScanner = null;
     const reader = document.getElementById("cancelScanReader");
     if (reader) reader.style.cssText = "width:100%;max-width:360px;margin-bottom:16px;border-radius:8px;overflow:hidden;";
-    document.body.style.overflow = "";
+    document.querySelector("header")?.style.removeProperty("display");
+    document.querySelector(".page-nav")?.style.removeProperty("display");
   });
 }
 
