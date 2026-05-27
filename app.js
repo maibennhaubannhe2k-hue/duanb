@@ -977,6 +977,23 @@ function bindCancelScanEvents() {
 function startCameraScanner() {
   if (isCameraRunning) return;
   if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
+
+  const readerEl = document.getElementById("cancelScanReader");
+  const videoObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeName === "VIDEO") {
+          node.setAttribute("playsinline", "");
+          node.setAttribute("webkit-playsinline", "");
+          node.setAttribute("x-webkit-airplay", "deny");
+          node.disablePictureInPicture = true;
+          videoObserver.disconnect();
+        }
+      }
+    }
+  });
+  videoObserver.observe(readerEl, { childList: true, subtree: true });
+
   html5QrScanner = new Html5Qrcode("cancelScanReader", {
     formatsToSupport: [0, 3, 5, 9, 10]
   });
