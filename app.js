@@ -978,13 +978,7 @@ function startCameraScanner() {
   if (isCameraRunning) return;
   if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
   html5QrScanner = new Html5Qrcode("cancelScanReader", {
-    formatsToSupport: [
-      Html5QrcodeSupportedFormats.QR_CODE,
-      Html5QrcodeSupportedFormats.CODE_128,
-      Html5QrcodeSupportedFormats.CODE_39,
-      Html5QrcodeSupportedFormats.EAN_13,
-      Html5QrcodeSupportedFormats.EAN_8,
-    ]
+    formatsToSupport: [0, 3, 5, 9, 10]
   });
   html5QrScanner.start(
     { facingMode: "environment" },
