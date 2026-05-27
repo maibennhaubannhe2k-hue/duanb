@@ -218,6 +218,29 @@ tr.row-success { background: #f0fdf4; }
 tr.row-warning { background: #fefce8; }
 tr.row-error { background: #fef2f2; }
 
+.scan-line-overlay {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.scan-line {
+  position: absolute;
+  left: 8%; right: 8%;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, #f59e0b, #fbbf24, #f59e0b, transparent);
+  box-shadow: 0 0 10px #f59e0b, 0 0 4px #fbbf24;
+  border-radius: 2px;
+  animation: scanMove 1.5s ease-in-out infinite;
+}
+
+@keyframes scanMove {
+  0%   { top: 20%; }
+  50%  { top: 75%; }
+  100% { top: 20%; }
+}
+
 @media (max-width: 920px) {
   .scan-layout { grid-template-columns: 1fr; } /* Gom về 1 cột trên điện thoại */
   h1 { font-size: 28px; }

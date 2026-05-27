@@ -44,6 +44,7 @@ let isCameraRunning = false;
 let lastCamCode = "";
 let lastCamTime = 0;
 let cancelReturnCache = {};
+let scanMsgTimer = null;
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
@@ -908,9 +909,16 @@ function handleCancelScan(code) {
   cancelScanList.unshift(result);
   renderCancelScanResults();
   if (result.found) {
-    showCancelScanMsg(`✅ ${code} → Lô ${result.batchId} → STT ${result.stt} / ${result.total} đơn`, "#10b981");
+    showCancelScanMsg(`✅ Đã quét thành công: ${code}`, "#10b981");
+    playTone("success");
+    clearTimeout(scanMsgTimer);
+    scanMsgTimer = setTimeout(() => {
+      const el = document.getElementById("cancelScanMessage");
+      if (el) el.style.display = "none";
+    }, 1000);
   } else {
     showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
+    playTone("error");
   }
 }
 
@@ -993,6 +1001,13 @@ function startCameraScanner() {
     isCameraRunning = true;
     document.getElementById("startCameraBtn").style.display = "none";
     document.getElementById("stopCameraBtn").style.display = "inline-block";
+    const reader = document.getElementById("cancelScanReader");
+    reader.style.position = "relative";
+    const overlay = document.createElement("div");
+    overlay.id = "scanLineOverlay";
+    overlay.className = "scan-line-overlay";
+    overlay.innerHTML = '<div class="scan-line"></div>';
+    reader.appendChild(overlay);
   }).catch(err => alert("Không thể bật camera: " + err));
 }
 
@@ -1005,6 +1020,7 @@ function stopCameraScanner() {
     const t = document.getElementById("stopCameraBtn");
     if (s) s.style.display = "inline-block";
     if (t) t.style.display = "none";
+    document.getElementById("scanLineOverlay")?.remove();
   }).catch(() => { isCameraRunning = false; html5QrScanner = null; });
 }
 
