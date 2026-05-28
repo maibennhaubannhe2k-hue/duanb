@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, push, onValue, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, onChildAdded, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -376,10 +376,14 @@ function bindEvents() {
     exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
 
-  // Khi tab active trở lại (mở khoá máy, chuyển tab...) → tự sync offline data
+  // Tắt camera khi chuyển tab
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) syncLocalToFirebase();
     if (document.hidden && isCameraRunning) stopCameraScanner();
+  });
+
+  // Sync offline data khi mạng vừa kết nối lại
+  onValue(ref(db, ".info/connected"), (snapshot) => {
+    if (snapshot.val() === true) syncLocalToFirebase();
   });
 
   bindCancelScanEvents();
@@ -790,33 +794,18 @@ let isBatchPushing = false;
 
 function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
-  unsubscribeTodayScan = onValue(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`), (snapshot) => {
-    const localDay = scanDataCache[todayStr()];
-    const localOrders = localDay?.orders || [];
-    const firebaseDay = snapshot.exists() ? firebaseDayToLocal(snapshot.val(), todayStr()) : null;
-    const firebaseOrders = firebaseDay?.orders || [];
-
-    if (firebaseOrders.length > localOrders.length) {
-      // Firebase nhiều hơn → merge vào local (không overwrite để giữ data local)
-      const localKeys = new Set(localOrders.map(o => `${o.code}|${o.time}`));
-      const newFromFb = firebaseOrders.filter(o => !localKeys.has(`${o.code}|${o.time}`));
-      if (newFromFb.length > 0) {
-        const merged = { date: todayStr(), orders: [...localOrders, ...newFromFb] };
-        scanDataCache[todayStr()] = merged;
-        idbSaveDay(merged);
-        renderBatches();
-        renderTodayList(getDayOrders(todayStr()));
-      }
-    } else if (localOrders.length > firebaseOrders.length && !isBatchPushing) {
-      // Local nhiều hơn → push đơn còn thiếu, dùng flag tránh cascade listener
-      const fbKeys = new Set(firebaseOrders.map(o => `${o.code}|${o.time}`));
-      const missing = localOrders.filter(o => !fbKeys.has(`${o.code}|${o.time}`));
-      if (missing.length > 0) {
-        isBatchPushing = true;
-        Promise.all(missing.map(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}/orders`), o)
-          .catch(err => console.error("Lỗi đẩy đơn offline lên Firebase:", err))))
-          .finally(() => { isBatchPushing = false; });
-      }
+  const todayKey = todayStr();
+  unsubscribeTodayScan = onChildAdded(ref(db, `${FIREBASE_SCAN_KEY}/${todayKey}/orders`), (snapshot) => {
+    const order = snapshot.val();
+    if (!order || !order.code || !order.time) return;
+    const localDay = scanDataCache[todayKey] || { date: todayKey, orders: [] };
+    const alreadyExists = localDay.orders.some(o => o.code === order.code && o.time === order.time);
+    if (!alreadyExists) {
+      localDay.orders.push(order);
+      scanDataCache[todayKey] = localDay;
+      idbSaveDay(localDay);
+      renderBatches();
+      renderTodayList(getDayOrders(todayKey));
     }
   });
 }
