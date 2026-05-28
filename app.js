@@ -752,10 +752,11 @@ const audioCache = {
   error: new Audio("donhuy.wav")
 };
 
-function playTone(kind, speakText) {
+function playTone(kind, speakText, volume = 1.0) {
   const audio = audioCache[kind];
   if (!audio) { if (speakText) speak(speakText); return; }
   audio.currentTime = 0;
+  audio.volume = volume;
   audio.onended = speakText ? () => speak(speakText) : null;
   audio.play().catch(() => { if (speakText) speak(speakText); });
 }
@@ -985,11 +986,12 @@ function startCameraScanner() {
   videoObserver.observe(readerEl, { childList: true, subtree: true });
 
   html5QrScanner = new Html5Qrcode("cancelScanReader", {
-    formatsToSupport: [0, 3, 5, 9, 10]
+    formatsToSupport: [0, 3, 5, 9, 10],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
   });
   html5QrScanner.start(
-    { facingMode: "environment" },
-    { fps: 15, qrbox: { width: 320, height: 160 } },
+    { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.4) }) },
     (decodedText) => {
       const now = Date.now();
       if (decodedText === lastCamCode && now - lastCamTime < 2000) return;
