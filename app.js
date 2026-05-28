@@ -1003,6 +1003,11 @@ function startCameraScanner() {
   `;
   document.body.appendChild(modal);
   updateCamCount();
+  // Unlock audio trên iOS (phải chạy trong user gesture)
+  Object.values(audioCache).forEach(a => {
+    a.muted = true;
+    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
+  });
 
   document.getElementById("camStopBtn").addEventListener("click", stopCameraScanner);
   document.getElementById("camClearBtn").addEventListener("click", () => {
