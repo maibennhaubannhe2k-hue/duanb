@@ -1063,6 +1063,16 @@ async function loadAndRenderCancelReturns(date) {
   }
   const orders = cancelReturnCache[date]?.orders || [];
   title.textContent = `Đơn Hủy Trả Về: ${orders.length} đơn`;
+  const exportBtn = document.getElementById("exportCancelReturnBtn");
+  if (exportBtn) {
+    exportBtn.style.display = orders.length > 0 ? "inline-block" : "none";
+    exportBtn.onclick = () => {
+      exportOrdersToExcel(
+        orders.map((o, i) => ({ "#": i + 1, "Mã đơn": o.code, "Lô/Xe": o.batchId, "DVVC": o.carrier, "STT trong biên bản": o.stt, "Tổng đơn xe": o.total })),
+        `DonHuyTraVe_${date}.xlsx`
+      );
+    };
+  }
   body.innerHTML = "";
   if (orders.length === 0) {
     body.innerHTML = `<tr><td colspan="5" style="text-align:center;">Không có đơn hủy trả về trong ngày này</td></tr>`;
