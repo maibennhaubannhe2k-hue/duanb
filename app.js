@@ -897,6 +897,7 @@ function handleCancelScan(code) {
   const result = findOrderInBatch(code);
   cancelScanList.unshift(result);
   renderCancelScanResults();
+  saveCancelReturn(true);
   if (result.found) {
     showCancelScanMsg(`✅ Đã quét thành công: ${code}`, "#10b981");
     playTone("success");
@@ -1031,23 +1032,23 @@ function stopCameraScanner() {
   }).catch(() => { isCameraRunning = false; html5QrScanner = null; });
 }
 
-async function saveCancelReturn() {
-  const toSave = cancelScanList.filter(r => r.found && r.stt !== "-");
-  if (toSave.length === 0) { alert("Chưa có đơn hợp lệ để lưu!"); return; }
+async function saveCancelReturn(silent = false) {
+  const toSave = cancelScanList;
+  if (toSave.length === 0) { if (!silent) alert("Chưa có đơn nào để lưu!"); return; }
   const date = todayStr();
   const now = new Date().toISOString();
   const existing = cancelReturnCache[date]?.orders || [];
   const existingCodes = new Set(existing.map(o => o.code));
   const newEntries = toSave.filter(r => !existingCodes.has(r.code))
-    .map(r => ({ code: r.code, batchId: r.batchId, carrier: r.carrier, stt: r.stt, total: r.total, time: now }));
-  if (newEntries.length === 0) { showCancelScanMsg("⚠️ Tất cả đơn đã được lưu trước đó!", "#f59e0b"); return; }
+    .map(r => ({ code: r.code, found: r.found !== false, batchId: r.batchId || "-", carrier: r.carrier || "-", stt: r.stt || "-", total: r.total || "-", time: now }));
+  if (newEntries.length === 0) { if (!silent) showCancelScanMsg("⚠️ Tất cả đơn đã được lưu trước đó!", "#f59e0b"); return; }
   const merged = [...existing, ...newEntries];
   cancelReturnCache[date] = { date, orders: merged };
   try {
     await set(ref(db, `${CANCEL_RETURN_KEY}/${date}`), { date, orders: merged });
-    showCancelScanMsg(`✅ Đã lưu ${newEntries.length} đơn hủy ngày ${date}`, "#10b981");
+    if (!silent) showCancelScanMsg(`✅ Đã lưu ${newEntries.length} đơn hủy ngày ${date}`, "#10b981");
   } catch (err) {
-    showCancelScanMsg("❌ Lỗi lưu Firebase, vui lòng thử lại!", "#ef4444");
+    if (!silent) showCancelScanMsg("❌ Lỗi lưu Firebase, vui lòng thử lại!", "#ef4444");
   }
 }
 
@@ -1068,7 +1069,14 @@ async function loadAndRenderCancelReturns(date) {
     exportBtn.style.display = orders.length > 0 ? "inline-block" : "none";
     exportBtn.onclick = () => {
       exportOrdersToExcel(
-        orders.map((o, i) => ({ "#": i + 1, "Mã đơn": o.code, "Lô/Xe": o.batchId, "DVVC": o.carrier, "STT trong biên bản": o.stt, "Tổng đơn xe": o.total })),
+        orders.map((o, i) => ({
+          "#": i + 1,
+          "Mã đơn": o.code,
+          "Lô/Xe": o.found === false ? "Không tìm thấy" : o.batchId,
+          "DVVC": o.found === false ? "-" : o.carrier,
+          "STT trong biên bản": o.found === false ? "-" : o.stt,
+          "Tổng đơn xe": o.found === false ? "-" : o.total
+        })),
         `DonHuyTraVe_${date}.xlsx`
       );
     };
@@ -1080,7 +1088,10 @@ async function loadAndRenderCancelReturns(date) {
   }
   orders.forEach((o, i) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${i + 1}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
+    tr.style.background = o.found === false ? "#fef2f2" : "";
+    tr.innerHTML = o.found === false
+      ? `<td>${i + 1}</td><td><b>${o.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`
+      : `<td>${i + 1}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
     body.appendChild(tr);
   });
 }
