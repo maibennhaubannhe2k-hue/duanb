@@ -990,7 +990,7 @@ function startCameraScanner() {
     experimentalFeatures: { useBarCodeDetectorIfSupported: true }
   });
   html5QrScanner.start(
-    { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } },
+    { facingMode: "environment" },
     { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.4) }) },
     (decodedText) => {
       const now = Date.now();
