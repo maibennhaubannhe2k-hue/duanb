@@ -1037,6 +1037,13 @@ async function saveCancelReturn(silent = false) {
   if (toSave.length === 0) { if (!silent) alert("Chưa có đơn nào để lưu!"); return; }
   const date = todayStr();
   const now = new Date().toISOString();
+  // Fetch từ Firebase trước nếu cache chưa có — tránh ghi đè dữ liệu cũ
+  if (!cancelReturnCache[date]) {
+    try {
+      const snap = await get(ref(db, `${CANCEL_RETURN_KEY}/${date}`));
+      if (snap.exists()) cancelReturnCache[date] = snap.val();
+    } catch (e) {}
+  }
   const existing = cancelReturnCache[date]?.orders || [];
   const existingCodes = new Set(existing.map(o => o.code));
   const newEntries = toSave.filter(r => !existingCodes.has(r.code))
