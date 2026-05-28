@@ -898,6 +898,7 @@ function handleCancelScan(code) {
   const result = findOrderInBatch(code);
   cancelScanList.unshift(result);
   renderCancelScanResults();
+  updateCamCount();
   saveCancelReturn(true);
   if (result.found) {
     showCancelScanMsg(`✅ Đã quét thành công: ${code}`, "#10b981");
@@ -906,7 +907,9 @@ function handleCancelScan(code) {
     scanMsgTimer = setTimeout(() => {
       const el = document.getElementById("cancelScanMessage");
       if (el) el.style.display = "none";
-    }, 1000);
+      const camMsg = document.getElementById("camMsgEl");
+      if (camMsg) camMsg.style.display = "none";
+    }, 1500);
   } else {
     showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
     playTone("error");
@@ -915,12 +918,20 @@ function handleCancelScan(code) {
 
 function showCancelScanMsg(text, color) {
   const el = document.getElementById("cancelScanMessage");
-  if (!el) return;
-  el.style.display = "block";
-  el.style.background = color + "20";
-  el.style.color = color;
-  el.style.border = `1px solid ${color}`;
-  el.textContent = text;
+  if (el) {
+    el.style.display = "block";
+    el.style.background = color + "20";
+    el.style.color = color;
+    el.style.border = `1px solid ${color}`;
+    el.textContent = text;
+  }
+  const camMsg = document.getElementById("camMsgEl");
+  if (camMsg) {
+    camMsg.style.display = "block";
+    camMsg.style.background = color + "20";
+    camMsg.style.color = color;
+    camMsg.textContent = text;
+  }
 }
 
 function renderCancelScanResults() {
@@ -965,11 +976,44 @@ function bindCancelScanEvents() {
   });
 }
 
+function updateCamCount() {
+  const el = document.getElementById("camScanCount");
+  if (el) el.textContent = `${cancelScanList.length} đơn`;
+}
+
 function startCameraScanner() {
   if (isCameraRunning) return;
   if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
 
-  const readerEl = document.getElementById("cancelScanReader");
+  // Tạo modal fullscreen
+  const modal = document.createElement("div");
+  modal.id = "cameraModal";
+  modal.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:9999;display:flex;flex-direction:column;";
+  modal.innerHTML = `
+    <div style="background:#7c3aed;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+      <span style="font-weight:bold;font-size:17px;">📷 Quét Mã Đơn Hủy</span>
+      <span id="camScanCount" style="background:rgba(0,0,0,0.4);padding:4px 14px;border-radius:20px;font-size:15px;font-weight:bold;">0 đơn</span>
+    </div>
+    <div id="cameraModalReader" style="flex:1;position:relative;background:#000;overflow:hidden;"></div>
+    <div id="camMsgEl" style="display:none;padding:10px 16px;font-weight:bold;font-size:15px;text-align:center;flex-shrink:0;"></div>
+    <div style="background:#0f172a;padding:12px 16px;display:flex;flex-direction:column;gap:8px;flex-shrink:0;">
+      <button id="camStopBtn" style="background:#f59e0b;color:white;font-weight:bold;padding:14px;border:none;border-radius:10px;font-size:16px;width:100%;cursor:pointer;">⏹ Dừng Camera</button>
+      <button id="camClearBtn" style="background:transparent;color:#94a3b8;padding:10px;border:1px solid #334155;border-radius:10px;font-size:14px;width:100%;cursor:pointer;">🗑 Xóa tất cả mã đã quét</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  updateCamCount();
+
+  document.getElementById("camStopBtn").addEventListener("click", stopCameraScanner);
+  document.getElementById("camClearBtn").addEventListener("click", () => {
+    cancelScanList = [];
+    renderCancelScanResults();
+    updateCamCount();
+    const msg = document.getElementById("cancelScanMessage");
+    if (msg) msg.style.display = "none";
+  });
+
+  const readerEl = document.getElementById("cameraModalReader");
   const videoObserver = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
@@ -985,7 +1029,7 @@ function startCameraScanner() {
   });
   videoObserver.observe(readerEl, { childList: true, subtree: true });
 
-  html5QrScanner = new Html5Qrcode("cancelScanReader", {
+  html5QrScanner = new Html5Qrcode("cameraModalReader", {
     formatsToSupport: [0, 3, 5, 9, 10],
     experimentalFeatures: { useBarCodeDetectorIfSupported: true }
   });
@@ -1003,35 +1047,27 @@ function startCameraScanner() {
   ).then(() => {
     isCameraRunning = true;
     document.getElementById("startCameraBtn").style.display = "none";
-    document.getElementById("stopCameraBtn").style.display = "inline-block";
-    const reader = document.getElementById("cancelScanReader");
-    reader.style.position = "relative";
-    const videoEl = reader.querySelector("video");
-    if (videoEl) {
-      videoEl.setAttribute("playsinline", "");
-      videoEl.setAttribute("webkit-playsinline", "");
-      videoEl.setAttribute("disablePictureInPicture", "");
-      videoEl.setAttribute("x-webkit-airplay", "deny");
-    }
     const overlay = document.createElement("div");
     overlay.id = "scanLineOverlay";
     overlay.className = "scan-line-overlay";
     overlay.innerHTML = '<div class="scan-line"></div>';
-    reader.appendChild(overlay);
-  }).catch(err => alert("Không thể bật camera: " + err));
+    readerEl.appendChild(overlay);
+  }).catch(err => {
+    document.getElementById("cameraModal")?.remove();
+    alert("Không thể bật camera: " + err);
+  });
 }
 
 function stopCameraScanner() {
-  if (!isCameraRunning || !html5QrScanner) return;
-  html5QrScanner.stop().then(() => {
+  const cleanup = () => {
     isCameraRunning = false;
     html5QrScanner = null;
+    document.getElementById("cameraModal")?.remove();
     const s = document.getElementById("startCameraBtn");
-    const t = document.getElementById("stopCameraBtn");
     if (s) s.style.display = "inline-block";
-    if (t) t.style.display = "none";
-    document.getElementById("scanLineOverlay")?.remove();
-  }).catch(() => { isCameraRunning = false; html5QrScanner = null; });
+  };
+  if (!html5QrScanner) { cleanup(); return; }
+  html5QrScanner.stop().then(cleanup).catch(cleanup);
 }
 
 async function saveCancelReturn(silent = false) {
