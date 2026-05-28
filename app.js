@@ -1078,6 +1078,7 @@ async function loadAndRenderCancelReturns(date) {
       exportOrdersToExcel(
         orders.map((o, i) => ({
           "#": i + 1,
+          "Thời gian": o.time ? formatTime(o.time) : "-",
           "Mã đơn": o.code,
           "Lô/Xe": o.found === false ? "Không tìm thấy" : o.batchId,
           "DVVC": o.found === false ? "-" : o.carrier,
@@ -1090,15 +1091,16 @@ async function loadAndRenderCancelReturns(date) {
   }
   body.innerHTML = "";
   if (orders.length === 0) {
-    body.innerHTML = `<tr><td colspan="5" style="text-align:center;">Không có đơn hủy trả về trong ngày này</td></tr>`;
+    body.innerHTML = `<tr><td colspan="6" style="text-align:center;">Không có đơn hủy trả về trong ngày này</td></tr>`;
     return;
   }
   orders.forEach((o, i) => {
     const tr = document.createElement("tr");
     tr.style.background = o.found === false ? "#fef2f2" : "";
+    const timeStr = o.time ? formatTime(o.time) : "-";
     tr.innerHTML = o.found === false
-      ? `<td>${i + 1}</td><td><b>${o.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`
-      : `<td>${i + 1}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
+      ? `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`
+      : `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
     body.appendChild(tr);
   });
 }
