@@ -953,8 +953,10 @@ function showMessage(text, type, station = "1") {
     camMsg.style.display = "block";
     camMsg.style.background = type === "success" ? "#f0fdf4" : type === "warning" ? "#fefce8" : "#fef2f2";
     camMsg.style.color = type === "success" ? "#15803d" : type === "warning" ? "#a16207" : "#b91c1c";
+    camMsg.style.fontSize = "20px";
+    camMsg.style.padding = "14px 16px";
+    camMsg.style.whiteSpace = "pre-line";
     camMsg.textContent = text;
-    setTimeout(() => { if (camMsg) camMsg.style.display = "none"; }, 2500);
   }
 }
 function localDateStr(d = new Date()) {
@@ -1176,13 +1178,6 @@ async function handleCancelScan(code) {
     const extra = [batchText, sttText].filter(Boolean).join(" — ");
     showCancelScanMsg(`✅ ${code}${extra ? "\n" + extra : ""}`, "#10b981");
     playTone("success");
-    clearTimeout(scanMsgTimer);
-    scanMsgTimer = setTimeout(() => {
-      const el = document.getElementById("cancelScanMessage");
-      if (el) el.style.display = "none";
-      const camMsg = document.getElementById("camMsgEl");
-      if (camMsg) camMsg.style.display = "none";
-    }, 2500);
   } else {
     showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
     playTone("error");
@@ -1197,6 +1192,8 @@ function showCancelScanMsg(text, color) {
     el.style.color = color;
     el.style.border = `1px solid ${color}`;
     el.style.whiteSpace = "pre-line";
+    el.style.fontSize = "20px";
+    el.style.padding = "14px 16px";
     el.textContent = text;
   }
   const camMsg = document.getElementById("camMsgEl");
@@ -1205,6 +1202,8 @@ function showCancelScanMsg(text, color) {
     camMsg.style.background = color + "20";
     camMsg.style.color = color;
     camMsg.style.whiteSpace = "pre-line";
+    camMsg.style.fontSize = "20px";
+    camMsg.style.padding = "14px 16px";
     camMsg.textContent = text;
   }
 }
@@ -1458,6 +1457,7 @@ function startScanPageCamera(station = "1") {
 
   document.getElementById("scanCamStopBtn").addEventListener("click", stopScanPageCamera);
 
+  ensureAudioContext();
   Object.values(audioCache).forEach(a => {
     a.muted = true;
     a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
