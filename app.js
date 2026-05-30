@@ -173,7 +173,7 @@ async function init() {
   // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
   try {
     const missingDays = [];
-    for (let i = 1; i <= 45; i++) {
+    for (let i = 1; i <= 10; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const dateStr = localDateStr(d);
@@ -854,7 +854,39 @@ const audioCache = {
   error: new Audio("donhuy.wav")
 };
 
+// AudioContext — phát âm thanh trong async callback (iOS camera)
+let audioCtx = null;
+const audioBuffers = {};
+
+async function ensureAudioContext() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    for (const [key, url] of [["success","di.wav"],["warning","dontrung.wav"],["error","donhuy.wav"]]) {
+      if (audioBuffers[key]) continue;
+      const resp = await fetch(url);
+      const buf = await resp.arrayBuffer();
+      audioBuffers[key] = await audioCtx.decodeAudioData(buf);
+    }
+  } catch(e) {}
+}
+
+function playWithCtx(kind) {
+  if (!audioCtx || !audioBuffers[kind]) return false;
+  try {
+    const src = audioCtx.createBufferSource();
+    src.buffer = audioBuffers[kind];
+    src.connect(audioCtx.destination);
+    src.start();
+    return true;
+  } catch(e) { return false; }
+}
+
 function playTone(kind, speakText, volume = 1.0) {
+  if (playWithCtx(kind)) {
+    if (speakText) setTimeout(() => speak(speakText), 300);
+    return;
+  }
   const audio = audioCache[kind];
   if (!audio) { if (speakText) speak(speakText); return; }
   audio.currentTime = 0;
@@ -1108,11 +1140,7 @@ function startCameraScanner() {
   `;
   document.body.appendChild(modal);
   updateCamCount();
-  // Unlock audio trên iOS (phải chạy trong user gesture)
-  Object.values(audioCache).forEach(a => {
-    a.muted = true;
-    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
-  });
+  ensureAudioContext();
 
   document.getElementById("camStopBtn").addEventListener("click", stopCameraScanner);
   document.getElementById("camClearBtn").addEventListener("click", () => {
@@ -1145,7 +1173,7 @@ function startCameraScanner() {
   });
   html5QrScanner.start(
     { facingMode: "environment" },
-    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.35) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.5) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
     (decodedText) => {
       const now = Date.now();
       if (decodedText === lastCamCode && now - lastCamTime < 2000) return;
@@ -1309,7 +1337,7 @@ function startScanPageCamera(station = "1") {
   });
   html5QrScannerMain.start(
     { facingMode: "environment" },
-    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.35) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.5) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
     (decodedText) => {
       const now = Date.now();
       if (decodedText === lastScanCamCode && now - lastScanCamTime < 2000) return;
