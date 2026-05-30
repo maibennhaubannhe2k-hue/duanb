@@ -1375,6 +1375,9 @@ async function saveCancelReturn(silent = false) {
   try {
     await set(ref(db, `${CANCEL_RETURN_KEY}/${date}`), { date, orders: merged });
     if (!silent) showCancelScanMsg(`✅ Đã lưu ${newEntries.length} đơn hủy ngày ${date}`, "#10b981");
+    // Tự cập nhật danh sách lịch sử nếu đang xem ngày hôm nay
+    const picker = document.getElementById("cancelReturnDatePicker");
+    if (picker?.value === date) loadAndRenderCancelReturns(date);
   } catch (err) {
     if (!silent) showCancelScanMsg("❌ Lỗi lưu Firebase, vui lòng thử lại!", "#ef4444");
   }
