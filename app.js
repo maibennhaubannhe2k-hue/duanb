@@ -435,8 +435,8 @@ function bindEvents() {
     renderClosedBatches(date);
   });
 
-  historySearchInput?.addEventListener("input", async (e) => {
-    const raw = e.target.value.trim();
+  const doHistorySearch = async () => {
+    const raw = historySearchInput?.value.trim();
     if (!raw) {
       const date = historyDatePicker?.value;
       if (date) renderHistoryTable(getDayOrders(date), `Lịch sử ngày ${date}`);
@@ -445,7 +445,7 @@ function bindEvents() {
     }
     const terms = raw.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
     if (terms.length === 0) return;
-    // Tìm trong cache (30 ngày gần)
+    renderHistoryTable([], "Đang tìm kiếm...");
     let results = [];
     const cachedKeys = new Set();
     Object.keys(scanDataCache).forEach(date => {
@@ -456,13 +456,15 @@ function bindEvents() {
         }
       });
     });
-    // Tìm thêm trong IDB (full lịch sử)
     const idbResults = await idbSearchOrders(terms);
     idbResults.forEach(o => {
       if (!cachedKeys.has(`${o.code}|${o.time}`)) results.push(o);
     });
     renderHistoryTable(results, `Kết quả tìm kiếm: ${terms.join(", ")}`);
-  });
+  };
+
+  historySearchInput?.addEventListener("keydown", e => { if (e.key === "Enter") doHistorySearch(); });
+  document.getElementById("historySearchBtn")?.addEventListener("click", doHistorySearch);
 
   document.getElementById("selectAllBatches")?.addEventListener("change", (e) => {
     document.querySelectorAll(".batch-checkbox").forEach(cb => cb.checked = e.target.checked);
@@ -608,6 +610,8 @@ function renderAll() {
   if (activePage === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
 }
 
+const rowBg = { [STATUS.SUCCESS]: "#f0fdf4", [STATUS.DUPLICATE]: "#fde047", [STATUS.CANCELED]: "#fef2f2" };
+
 function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "loadMoreTodayBtn", showAllFlag = false, onShowAll = null) {
   const body = document.getElementById(bodyId);
   const btn = document.getElementById(loadMoreId);
@@ -618,6 +622,7 @@ function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "load
   reversed.slice(0, limit).forEach(o => {
     const tr = document.createElement("tr");
     tr.className = statusClass[o.status];
+    tr.style.background = rowBg[o.status] || "";
     tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
     body.appendChild(tr);
   });
@@ -1106,7 +1111,7 @@ async function syncLocalToFirebase() {
 }
 
 // === TRA CỨU ĐƠN HỦY XE ===
-function findOrderInBatch(code) {
+async function findOrderInBatch(code) {
   let foundOrder = null;
   let foundDate = null;
   for (let i = 0; i < 10; i++) {
@@ -1117,13 +1122,30 @@ function findOrderInBatch(code) {
     const order = dayData.orders.find(o => o.code === code && o.status === STATUS.SUCCESS);
     if (order) { foundOrder = order; foundDate = dateStr; break; }
   }
+  // Fallback: tìm thẳng trong IDB nếu cache chưa có
+  if (!foundOrder) {
+    const idbResults = await idbSearchOrders([code.toLowerCase()]);
+    const hit = idbResults.find(o => o.code === code && o.status === STATUS.SUCCESS);
+    if (hit) {
+      foundOrder = hit;
+      foundDate = localDateStr(new Date(hit.time));
+      // Load ngày đó vào cache để dùng tiếp
+      if (!scanDataCache[foundDate]) {
+        try {
+          const snap = await get(ref(db, `${FIREBASE_SCAN_KEY}/${foundDate}`));
+          if (snap.exists()) { scanDataCache[foundDate] = firebaseDayToLocal(snap.val(), foundDate); }
+        } catch(e) {}
+      }
+    }
+  }
   if (!foundOrder) return { found: false, code };
 
   const { batchId, carrier } = foundOrder;
   if (!batchId) return { found: true, code, batchId: "-", carrier, stt: "-", total: "-" };
 
-  const closedBatch = closedBatches.find(b => b.id === batchId && b.carrier === carrier);
-  const activeBatch = activeBatches[carrier]?.id === batchId ? activeBatches[carrier] : null;
+  const closedBatch = [...closedBatches, ...closedBatches2].find(b => b.id === batchId && b.carrier === carrier);
+  const activeBatch = (activeBatches[carrier]?.id === batchId ? activeBatches[carrier] : null)
+    || (activeBatches2[carrier]?.id === batchId ? activeBatches2[carrier] : null);
   const batch = closedBatch || activeBatch;
   const fromDate = batch?.createdDate || foundDate;
   const toDate = closedBatch?.date || todayStr();
@@ -1137,13 +1159,13 @@ function findOrderInBatch(code) {
   return { found: true, code, batchId, carrier, stt, total: batchOrders.length };
 }
 
-function handleCancelScan(code) {
+async function handleCancelScan(code) {
   if (!code) return;
   if (cancelScanList.some(r => r.code === code)) {
     showCancelScanMsg(`⚠️ Mã ${code} đã quét rồi!`, "#f59e0b");
     return;
   }
-  const result = findOrderInBatch(code);
+  const result = await findOrderInBatch(code);
   cancelScanList.unshift(result);
   renderCancelScanResults();
   updateCamCount();

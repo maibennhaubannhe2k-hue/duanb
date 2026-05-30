@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Quản Lý Quét Đơn Xuất Kho TMDT</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -237,8 +237,11 @@ G12345678"></textarea>
               <input id="historyDatePicker" type="date" style="margin-top: 5px;">
           </div>
           <div style="flex: 2;">
-              <label style="font-weight: bold; color: #ee4d2d;">🔍 Tìm mã vận đơn (Kính lúp):</label>
-              <input id="historySearchInput" type="text" placeholder="Dán mã hoặc một phần mã để tìm..." style="margin-top: 5px;">
+              <label style="font-weight: bold; color: #ee4d2d;">🔍 Tìm mã vận đơn:</label>
+              <div style="display:flex;gap:8px;margin-top:5px;">
+                <input id="historySearchInput" type="text" placeholder="Dán mã hoặc một phần mã..." style="flex:1;">
+                <button id="historySearchBtn" style="background:#ee4d2d;color:white;padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:15px;white-space:nowrap;">🔍 Tìm</button>
+              </div>
           </div>
         </div>
 
@@ -358,6 +361,6 @@ G12345678"></textarea>
     </section>
   </main>
 
-  <script type="module" src="app.js?v=41"></script>
+  <script type="module" src="app.js?v=45"></script>
 </body>
 </html>
