@@ -1359,11 +1359,18 @@ async function saveCancelReturn(silent = false) {
     } catch (e) {}
   }
   const existing = cancelReturnCache[date]?.orders || [];
-  const existingCodes = new Set(existing.map(o => o.code));
-  const newEntries = toSave.filter(r => !existingCodes.has(r.code))
+  const existingFoundCodes = new Set(existing.filter(o => o.found !== false).map(o => o.code));
+  const existingNotFoundCodes = new Set(existing.filter(o => o.found === false).map(o => o.code));
+  const newEntries = toSave.filter(r => {
+    if (existingFoundCodes.has(r.code)) return false; // đã có và tìm thấy rồi → bỏ qua
+    if (existingNotFoundCodes.has(r.code) && r.found === false) return false; // cả 2 đều không tìm thấy → bỏ qua
+    return true; // đơn mới, hoặc trước không tìm thấy nay tìm được → lưu
+  })
     .map(r => ({ code: r.code, found: r.found !== false, batchId: r.batchId || "-", carrier: r.carrier || "-", stt: r.stt || "-", total: r.total || "-", time: now }));
   if (newEntries.length === 0) { if (!silent) showCancelScanMsg("⚠️ Tất cả đơn đã được lưu trước đó!", "#f59e0b"); return; }
-  const merged = [...existing, ...newEntries];
+  const overrideCodes = new Set(newEntries.filter(r => r.found !== false).map(r => r.code));
+  const filteredExisting = existing.filter(o => !overrideCodes.has(o.code));
+  const merged = [...filteredExisting, ...newEntries];
   cancelReturnCache[date] = { date, orders: merged };
   try {
     await set(ref(db, `${CANCEL_RETURN_KEY}/${date}`), { date, orders: merged });
