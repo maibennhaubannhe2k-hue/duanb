@@ -153,6 +153,19 @@
             <input id="toDate" type="date">
           </div>
         </div>
+        <div class="filter-row" style="margin-top:10px;">
+          <div>
+            <label for="fromTime">Từ giờ (VD: 08:00)</label>
+            <input id="fromTime" type="text" placeholder="08:00" maxlength="5" style="width:100px;">
+          </div>
+          <div>
+            <label for="toTime">Đến giờ (VD: 12:00)</label>
+            <input id="toTime" type="text" placeholder="12:00" maxlength="5" style="width:100px;">
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button id="clearTimeBtn" style="background:#64748b;padding:10px 16px;font-size:15px;">✕ Xóa giờ</button>
+          </div>
+        </div>
         <div class="actions">
           <button id="applyFilterBtn">Áp dụng bộ lọc</button>
           <button id="resetFilterBtn">Về hôm nay</button>
@@ -345,6 +358,6 @@ G12345678"></textarea>
     </section>
   </main>
 
-  <script type="module" src="app.js?v=34"></script>
+  <script type="module" src="app.js?v=39"></script>
 </body>
 </html>

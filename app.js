@@ -345,7 +345,26 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("singleDate")?.addEventListener("change", () => renderAll());
+  document.getElementById("singleDate")?.addEventListener("change", () => {
+    currentFilter.fromTime = document.getElementById("fromTime")?.value || null;
+    currentFilter.toTime = document.getElementById("toTime")?.value || null;
+    renderAll();
+  });
+  document.getElementById("fromTime")?.addEventListener("change", () => {
+    currentFilter.fromTime = document.getElementById("fromTime").value || null;
+    renderAll();
+  });
+  document.getElementById("toTime")?.addEventListener("change", () => {
+    currentFilter.toTime = document.getElementById("toTime").value || null;
+    renderAll();
+  });
+  document.getElementById("clearTimeBtn")?.addEventListener("click", () => {
+    document.getElementById("fromTime").value = "";
+    document.getElementById("toTime").value = "";
+    currentFilter.fromTime = null;
+    currentFilter.toTime = null;
+    renderAll();
+  });
 
   orderInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -373,8 +392,10 @@ function bindEvents() {
   document.getElementById("applyFilterBtn")?.addEventListener("click", () => {
     const f = document.getElementById("fromDate").value;
     const t = document.getElementById("toDate").value;
-    if (f && t) { currentFilter = { mode: "range", fromDate: f, toDate: t }; renderAll(); }
-    else alert("Vui lòng chọn cả Từ ngày và Đến ngày!");
+    if (f && t) {
+      currentFilter = { mode: "range", fromDate: f, toDate: t, fromTime: document.getElementById("fromTime").value || null, toTime: document.getElementById("toTime").value || null };
+      renderAll();
+    } else alert("Vui lòng chọn cả Từ ngày và Đến ngày!");
   });
 
   document.getElementById("resetFilterBtn")?.addEventListener("click", () => {
@@ -382,6 +403,8 @@ function bindEvents() {
     document.getElementById("singleDate").value = today;
     document.getElementById("fromDate").value = "";
     document.getElementById("toDate").value = "";
+    document.getElementById("fromTime").value = "";
+    document.getElementById("toTime").value = "";
     currentFilter = { mode: "single", singleDate: today };
     renderAll();
   });
@@ -776,6 +799,20 @@ function saveAllData(date, dayData, newOrder) {
   push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
 }
 
+function initTimeSelects() {
+  const p = n => String(n).padStart(2, "0");
+  const from = document.getElementById("fromTime");
+  const to = document.getElementById("toTime");
+  if (!from || !to) return;
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 30) {
+      from.innerHTML += `<option value="${p(h)}:${p(m)}">${p(h)}:${p(m)}</option>`;
+      const em = m === 0 ? 29 : 59;
+      to.innerHTML += `<option value="${p(h)}:${p(em)}">${p(h)}:${p(em)}</option>`;
+    }
+  }
+}
+
 function getDayOrders(date) { return scanDataCache[date]?.orders || []; }
 function getTodayOrdersByStation(date, station) {
   const orders = getDayOrders(date);
@@ -783,12 +820,33 @@ function getTodayOrdersByStation(date, station) {
   return orders.filter(o => !o.station || o.station === "1");
 }
 
+function parseTimeInput(val) {
+  if (!val) return null;
+  const m = val.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = parseInt(m[1]), min = parseInt(m[2]);
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+
 function getOrdersByFilter(filter) {
   const dates = Object.keys(scanDataCache);
   let selectedDates = filter.mode === "range" && filter.fromDate && filter.toDate
     ? dates.filter(d => d >= filter.fromDate && d <= filter.toDate)
     : dates.filter(d => d === filter.singleDate);
-  return selectedDates.flatMap(d => scanDataCache[d].orders || []);
+  let orders = selectedDates.flatMap(d => scanDataCache[d].orders || []);
+  const from = parseTimeInput(filter.fromTime);
+  const to = parseTimeInput(filter.toTime);
+  if (from !== null || to !== null) {
+    orders = orders.filter(o => {
+      const d = new Date(o.time);
+      const hm = d.getHours() * 60 + d.getMinutes();
+      if (from !== null && hm < from) return false;
+      if (to !== null && hm > to) return false;
+      return true;
+    });
+  }
+  return orders;
 }
 
 function detectCarrier(code) {
