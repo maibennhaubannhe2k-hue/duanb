@@ -16,7 +16,8 @@
 
   <main class="container">
     <nav class="card page-nav">
-      <button class="page-tab active" data-page="scanPage">Quét đơn</button>
+      <button class="page-tab active" data-page="scanPage">Quét đơn 1</button>
+      <button class="page-tab" data-page="scanPage2">Quét đơn 2</button>
       <button class="page-tab" data-page="dashboardPage">Dashboard</button>
       <button class="page-tab" data-page="cancelledPage">Đơn hủy</button>
       <button class="page-tab" data-page="historyPage">History</button>
@@ -64,6 +65,7 @@
             <h2>1) Quét Đơn</h2>
             <label for="orderInput">Mã đơn:</label>
             <input id="orderInput" type="text" placeholder="Nhập hoặc quét barcode rồi nhấn Enter" autocomplete="off">
+            <button id="startScanCameraBtn" style="background:#3b82f6;color:white;padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:15px;margin-top:8px;">📷 Quét Camera</button>
             <p id="scanMessage" class="message">Sẵn sàng quét...</p>
           </section>
 
@@ -85,6 +87,52 @@
           </section>
         </div>
 
+      </div>
+    </section>
+
+    <section id="scanPage2" class="app-page">
+      <div class="scan-layout">
+        <div class="scan-left">
+          <section class="card batch-card" style="border-top: 5px solid #f59e0b; height: 100%;">
+            <h2 style="color: #f59e0b; margin-top: 0; font-size: 22px;">🚚 Quản Lý Xe (Bàn 2)</h2>
+            <div class="batch-controls" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 15px;">
+              <select id="batchCarrier2" style="padding: 12px; font-size: 16px;">
+                <option value="Shopee Express">Shopee Express</option>
+                <option value="J&T">J&T</option>
+                <option value="GHN">GHN</option>
+                <option value="Viettel Post">Viettel Post</option>
+                <option value="Khac">Khác</option>
+              </select>
+              <input type="text" id="batchName2" placeholder="Tên xe (VD: SPX-Ca2)" style="padding: 12px; font-size: 16px;">
+              <button id="createBatchBtn2" style="background: #f59e0b; width: 100%; padding: 12px;">+ Tạo Xe Mới</button>
+            </div>
+            <div style="overflow-x: auto;">
+              <table style="font-size: 15px;">
+                <thead><tr><th>Lô/Xe</th><th>Đơn</th><th>Thao tác</th></tr></thead>
+                <tbody id="activeBatchesBody2"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+        <div class="scan-right" style="display: flex; flex-direction: column; gap: 16px;">
+          <section class="card scanner-card">
+            <h2>1) Quét Đơn (Bàn 2)</h2>
+            <label for="orderInput2">Mã đơn:</label>
+            <input id="orderInput2" type="text" placeholder="Nhập hoặc quét barcode rồi nhấn Enter" autocomplete="off">
+            <button id="startScanCameraBtn2" style="background:#3b82f6;color:white;padding:8px 16px;border:none;border-radius:8px;cursor:pointer;font-size:15px;margin-top:8px;">📷 Quét Camera</button>
+            <p id="scanMessage2" class="message">Sẵn sàng quét...</p>
+          </section>
+          <section class="card scanned-list-card">
+            <h2>2) Danh Sách Quét Hôm Nay (Bàn 2)</h2>
+            <table>
+              <thead>
+                <tr><th>Thời gian</th><th>Mã đơn</th><th>DVVC</th><th>Lô/Xe</th><th>Trạng thái</th></tr>
+              </thead>
+              <tbody id="todayScannedBody2"></tbody>
+            </table>
+            <button id="loadMoreTodayBtn2" class="outline-btn" style="display: none; width: 100%; margin-top: 15px; background: #e2e8f0; color: #0f172a; border: none; padding: 12px;">⬇️ Xem tất cả</button>
+          </section>
+        </div>
       </div>
     </section>
 
@@ -297,6 +345,6 @@ G12345678"></textarea>
     </section>
   </main>
 
-  <script type="module" src="app.js?v=28"></script>
+  <script type="module" src="app.js?v=32"></script>
 </body>
 </html>

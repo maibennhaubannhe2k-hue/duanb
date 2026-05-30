@@ -22,6 +22,9 @@ const ACTIVE_BATCH_KEY = "warehouse_active_batches_v2";
 const ACTIVE_BATCH_LOCAL_KEY = "warehouse_active_batches_local";
 const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1";
 const CANCEL_RETURN_KEY = "warehouse_cancel_return_v1";
+const ACTIVE_BATCH_KEY_2 = "warehouse_active_batches_s2_v1";
+const ACTIVE_BATCH_LOCAL_KEY_2 = "warehouse_active_batches_s2_local";
+const CLOSED_BATCH_KEY_2 = "warehouse_closed_batches_s2_v1";
 
 // IndexedDB — lưu đơn hàng không giới hạn dung lượng
 const IDB_NAME = "warehouse_db";
@@ -43,6 +46,12 @@ let html5QrScanner = null;
 let isCameraRunning = false;
 let lastCamCode = "";
 let lastCamTime = 0;
+
+// Camera quét đơn chính
+let isScanCameraRunning = false;
+let html5QrScannerMain = null;
+let lastScanCamCode = "";
+let lastScanCamTime = 0;
 let cancelReturnCache = {};
 let scanMsgTimer = null;
 
@@ -50,6 +59,9 @@ let scanMsgTimer = null;
 let scanDataCache = {};
 let activeBatches = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY)) || {};
 let closedBatches = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY)) || [];
+let activeBatches2 = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY_2)) || {};
+let closedBatches2 = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY_2)) || [];
+let showAllTodayOrders2 = false;
 
 // DOM Elements
 const orderInput = document.getElementById("orderInput");
@@ -182,7 +194,8 @@ async function init() {
   }
 
   renderAll();
-  renderBatches();
+  renderBatches("1");
+  renderBatches("2");
 
   subscribeToTodayScan();
   syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
@@ -221,11 +234,10 @@ async function init() {
     });
     if (addedClosed) localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
     if (removedActive) localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-    if (addedClosed || removedActive) renderBatches();
+    if (addedClosed || removedActive) renderBatches("1");
   });
 
   // Active batches: chỉ THÊM xe mới từ Firebase (thiết bị khác tạo)
-  // Không bao giờ xóa xe đang có local — chỉ closeBatch() mới được xóa
   onValue(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
     const firebaseBatches = snapshot.val() || {};
     const closedIds = new Set(closedBatches.map(b => b.id));
@@ -239,9 +251,43 @@ async function init() {
     });
     if (changed) {
       localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-      renderBatches();
+      renderBatches("1");
     }
   }, (err) => console.error("❌ Lỗi sync xe:", err));
+
+  // Station 2 - closed batches
+  onValue(ref(db, CLOSED_BATCH_KEY_2), (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+    const fromFirebase = Array.isArray(data) ? data : Object.values(data);
+    const localKeys = new Set(closedBatches2.map(b => `${b.id}|${b.carrier}`));
+    let addedClosed = false, removedActive = false;
+    fromFirebase.forEach(b => {
+      if (!localKeys.has(`${b.id}|${b.carrier}`)) { closedBatches2.push(b); addedClosed = true; }
+      if (activeBatches2[b.carrier]?.id === b.id) { delete activeBatches2[b.carrier]; removedActive = true; }
+    });
+    if (addedClosed) localStorage.setItem(CLOSED_BATCH_KEY_2, JSON.stringify(closedBatches2));
+    if (removedActive) localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+    if (addedClosed || removedActive) renderBatches("2");
+  });
+
+  // Station 2 - active batches
+  onValue(ref(db, ACTIVE_BATCH_KEY_2), (snapshot) => {
+    const firebaseBatches = snapshot.val() || {};
+    const closedIds = new Set(closedBatches2.map(b => b.id));
+    let changed = false;
+    Object.keys(firebaseBatches).forEach(carrier => {
+      const batch = firebaseBatches[carrier];
+      if (!activeBatches2[carrier] && !closedIds.has(batch.id)) {
+        activeBatches2[carrier] = batch;
+        changed = true;
+      }
+    });
+    if (changed) {
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+      renderBatches("2");
+    }
+  }, (err) => console.error("❌ Lỗi sync xe 2:", err));
 }
 
 // === 5. SỰ KIỆN ===
@@ -257,7 +303,7 @@ function bindEvents() {
       const name = document.getElementById("batchName").value.trim();
       if (!name) return alert("Vui lòng nhập tên xe/lô!");
       if (activeBatches[carrier]) return alert(`Đang có xe [${activeBatches[carrier].id}] mở cho [${carrier}] rồi! Vui lòng CHỐT XE trước khi tạo mới.`);
-      const nameUsed = Object.values(activeBatches).some(b => b.id === name) || closedBatches.some(b => b.id === name);
+      const nameUsed = Object.values(activeBatches).some(b => b.id === name) || Object.values(activeBatches2).some(b => b.id === name) || closedBatches.some(b => b.id === name) || closedBatches2.some(b => b.id === name);
       if (nameUsed) return alert(`Tên xe [${name}] đã được dùng trước đó! Vui lòng đặt tên khác.`);
       const newBatch = { id: name, count: 0, createdDate: todayStr() };
       activeBatches[carrier] = newBatch;
@@ -265,10 +311,39 @@ function bindEvents() {
       set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), newBatch)
         .catch(err => console.error("Lỗi tạo xe:", err));
       document.getElementById("batchName").value = "";
-      renderBatches();
+      renderBatches("1");
       focusOrderInput();
     });
   }
+
+  const createBatchBtn2 = document.getElementById("createBatchBtn2");
+  if (createBatchBtn2) {
+    createBatchBtn2.addEventListener("click", () => {
+      const carrier = document.getElementById("batchCarrier2").value;
+      const name = document.getElementById("batchName2").value.trim();
+      if (!name) return alert("Vui lòng nhập tên xe/lô!");
+      if (activeBatches2[carrier]) return alert(`Đang có xe [${activeBatches2[carrier].id}] mở cho [${carrier}] rồi! Vui lòng CHỐT XE trước khi tạo mới.`);
+      const nameUsed = Object.values(activeBatches).some(b => b.id === name) || Object.values(activeBatches2).some(b => b.id === name) || closedBatches.some(b => b.id === name) || closedBatches2.some(b => b.id === name);
+      if (nameUsed) return alert(`Tên xe [${name}] đã được dùng trước đó! Vui lòng đặt tên khác.`);
+      const newBatch = { id: name, count: 0, createdDate: todayStr() };
+      activeBatches2[carrier] = newBatch;
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+      set(ref(db, `${ACTIVE_BATCH_KEY_2}/${carrier}`), newBatch).catch(err => console.error("Lỗi tạo xe 2:", err));
+      document.getElementById("batchName2").value = "";
+      renderBatches("2");
+      setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
+    });
+  }
+
+  document.getElementById("orderInput2")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const input2 = document.getElementById("orderInput2");
+      handleScan(input2.value.trim(), "2");
+      input2.value = "";
+      setTimeout(() => input2.focus(), 0);
+    }
+  });
 
   document.getElementById("singleDate")?.addEventListener("change", () => renderAll());
 
@@ -376,9 +451,13 @@ function bindEvents() {
     exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
 
+  document.getElementById("startScanCameraBtn")?.addEventListener("click", () => startScanPageCamera("1"));
+  document.getElementById("startScanCameraBtn2")?.addEventListener("click", () => startScanPageCamera("2"));
+
   // Tắt camera khi chuyển tab
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && isCameraRunning) stopCameraScanner();
+    if (document.hidden && isScanCameraRunning) stopScanPageCamera();
   });
 
   // Sync offline data khi mạng vừa kết nối lại
@@ -390,24 +469,24 @@ function bindEvents() {
 }
 
 // === 6. QUÉT MÃ ===
-function handleScan(code) {
+function handleScan(code, station = "1") {
   if (!code) return;
   const date = todayStr();
   const now = new Date().toISOString();
   const carrier = detectCarrier(code);
   const canceledSet = getCancelledSet();
 
-  const activeBatch = activeBatches[carrier];
+  const batches = station === "2" ? activeBatches2 : activeBatches;
+  const activeBatch = batches[carrier];
 
-  // Chặn quét nếu xe của carrier này chưa chốt từ ngày hôm trước
   if (activeBatch && activeBatch.createdDate && activeBatch.createdDate < date) {
-    showMessage(`⚠️ XE [${activeBatch.id}] CỦA [${carrier}] CHƯA CHỐT TỪ NGÀY ${activeBatch.createdDate}\nVui lòng chốt xe này trước!`, "warning");
+    showMessage(`⚠️ XE [${activeBatch.id}] CỦA [${carrier}] CHƯA CHỐT TỪ NGÀY ${activeBatch.createdDate}\nVui lòng chốt xe này trước!`, "warning", station);
     playTone("error");
     return;
   }
 
   if (!canceledSet.has(code) && !activeBatch) {
-    showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error");
+    showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error", station);
     playTone("error", `Chưa tạo xe ${carrier}`);
     return;
   }
@@ -428,26 +507,27 @@ function handleScan(code) {
 
   if (canceledSet.has(code)) {
     status = STATUS.CANCELED;
-    showMessage("❌ ĐƠN HỦY - DỪNG LẠI", "error");
+    showMessage("❌ ĐƠN HỦY - DỪNG LẠI", "error", station);
     playTone("error", "Đơn hủy");
   } else if (isDuplicate) {
     status = STATUS.DUPLICATE;
     const diffDays = Math.floor((Date.now() - new Date(duplicateOriginal.time)) / 86400000);
     const daysText = diffDays === 0 ? "hôm nay" : `${diffDays} ngày trước`;
-    showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})`, "warning");
+    showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})`, "warning", station);
     playTone("warning");
   } else {
     status = STATUS.SUCCESS;
-    showMessage(`✅ THÀNH CÔNG: ${code}`, "success");
+    showMessage(`✅ THÀNH CÔNG: ${code}`, "success", station);
     playTone("success");
   }
 
-  const newOrder = { code, status, carrier, time: now, batchId: activeBatch ? activeBatch.id : "" };
+  const newOrder = { code, status, carrier, time: now, batchId: activeBatch ? activeBatch.id : "", station };
   day.orders.push(newOrder);
   scanDataCache[date] = day;
   saveAllData(date, day, newOrder);
   renderAll();
-  renderBatches();
+  renderBatches("1");
+  renderBatches("2");
 }
 
 // === 7. RENDER ===
@@ -478,18 +558,20 @@ function renderAll() {
     renderCarrierTable(filteredOrders);
     renderChart(filteredOrders);
   }
-  renderTodayList(getDayOrders(todayStr()));
+  renderTodayList(getTodayOrdersByStation(todayStr(), "1"), "todayScannedBody", "loadMoreTodayBtn", showAllTodayOrders, () => { showAllTodayOrders = true; });
+  renderTodayList(getTodayOrdersByStation(todayStr(), "2"), "todayScannedBody2", "loadMoreTodayBtn2", showAllTodayOrders2, () => { showAllTodayOrders2 = true; });
   loadCancelledCount();
   if (activePage === "scanPage") focusOrderInput();
+  if (activePage === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
 }
 
-function renderTodayList(orders) {
-  const body = document.getElementById("todayScannedBody");
-  const btn = document.getElementById("loadMoreTodayBtn");
+function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "loadMoreTodayBtn", showAllFlag = false, onShowAll = null) {
+  const body = document.getElementById(bodyId);
+  const btn = document.getElementById(loadMoreId);
   if (!body) return;
   body.innerHTML = "";
   const reversed = [...orders].reverse();
-  const limit = showAllTodayOrders ? reversed.length : 100;
+  const limit = showAllFlag ? reversed.length : 100;
   reversed.slice(0, limit).forEach(o => {
     const tr = document.createElement("tr");
     tr.className = statusClass[o.status];
@@ -497,37 +579,36 @@ function renderTodayList(orders) {
     body.appendChild(tr);
   });
   if (btn) {
-    if (reversed.length > 100 && !showAllTodayOrders) {
+    if (reversed.length > 100 && !showAllFlag) {
       btn.style.display = "block";
       btn.textContent = `⬇️ Xem tất cả (Còn ẩn ${reversed.length - 100} đơn)`;
-      btn.onclick = () => { showAllTodayOrders = true; renderTodayList(orders); };
+      btn.onclick = () => { if (onShowAll) onShowAll(); renderTodayList(orders, bodyId, loadMoreId, true, onShowAll); };
     } else {
       btn.style.display = "none";
     }
   }
 }
 
-function renderBatches() {
-  const body = document.getElementById("activeBatchesBody");
+function renderBatches(station = "1") {
+  const bodyId = station === "2" ? "activeBatchesBody2" : "activeBatchesBody";
+  const body = document.getElementById(bodyId);
   if (!body) return;
+  const batches = station === "2" ? activeBatches2 : activeBatches;
   body.innerHTML = "";
-  const keys = Object.keys(activeBatches);
+  const keys = Object.keys(batches);
   if (keys.length === 0) {
     body.innerHTML = `<tr><td colspan="3" style="text-align:center;">Chưa có xe</td></tr>`;
     return;
   }
   keys.forEach(carrier => {
-    const batch = activeBatches[carrier];
+    const batch = batches[carrier];
     const tr = document.createElement("tr");
-
     const isStale = batch.createdDate && batch.createdDate < todayStr();
     if (isStale) tr.style.background = "#fff7ed";
-
     const tdName = document.createElement("td");
     tdName.innerHTML = isStale
       ? `<strong style="color:#dc2626;">${batch.id}</strong><br><span style="font-size:13px;color:#dc2626;">⚠️ ${carrier} — tạo ngày ${batch.createdDate}</span>`
       : `<strong style="color:blue;">${batch.id}</strong><br><span style="font-size:13px;">${carrier}</span>`;
-
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
     const fromDate = batch.createdDate || todayStr();
@@ -537,14 +618,12 @@ function renderBatches() {
       .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
       .length;
     tdCount.textContent = realCount;
-
     const tdAction = document.createElement("td");
     const btn = document.createElement("button");
     btn.textContent = "✅ Chốt";
     btn.style.cssText = "background:#10b981;color:white;padding:6px 10px;border:none;border-radius:4px;cursor:pointer;";
-    btn.onclick = () => closeBatch(carrier);
+    btn.onclick = () => closeBatch(carrier, station);
     tdAction.appendChild(btn);
-
     tr.appendChild(tdName);
     tr.appendChild(tdCount);
     tr.appendChild(tdAction);
@@ -552,12 +631,10 @@ function renderBatches() {
   });
 }
 
-window.closeBatch = function(carrier) {
-  const batch = activeBatches[carrier];
-  if (!batch) {
-    alert(`Lỗi: Không tìm thấy xe cho [${carrier}]. Vui lòng tải lại trang.`);
-    return;
-  }
+window.closeBatch = function(carrier, station = "1") {
+  const batches = station === "2" ? activeBatches2 : activeBatches;
+  const batch = batches[carrier];
+  if (!batch) { alert(`Lỗi: Không tìm thấy xe cho [${carrier}]. Vui lòng tải lại trang.`); return; }
   if (!confirm(`Bạn có chắc chắn muốn CHỐT xe [${batch.id}] của [${carrier}] không?`)) return;
 
   const fromDate = batch.createdDate || todayStr();
@@ -569,25 +646,32 @@ window.closeBatch = function(carrier) {
 
   const closedEntry = { id: batch.id, carrier, count: realCount, date: todayStr(), createdDate: fromDate };
 
-  // 1. Cập nhật local state ngay lập tức (TRƯỚC khi gọi Firebase)
-  closedBatches = closedBatches.filter(b => !(b.id === batch.id && b.carrier === carrier));
-  closedBatches.push(closedEntry);
-  localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+  if (station === "2") {
+    closedBatches2 = closedBatches2.filter(b => !(b.id === batch.id && b.carrier === carrier));
+    closedBatches2.push(closedEntry);
+    localStorage.setItem(CLOSED_BATCH_KEY_2, JSON.stringify(closedBatches2));
+    delete activeBatches2[carrier];
+    localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+    setTimeout(() => {
+      set(ref(db, CLOSED_BATCH_KEY_2), closedBatches2).catch(err => console.error("Lỗi sync closed2:", err));
+      set(ref(db, `${ACTIVE_BATCH_KEY_2}/${carrier}`), null).catch(err => console.error("Lỗi xóa active2:", err));
+    }, 0);
+  } else {
+    closedBatches = closedBatches.filter(b => !(b.id === batch.id && b.carrier === carrier));
+    closedBatches.push(closedEntry);
+    localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+    delete activeBatches[carrier];
+    localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+    setTimeout(() => {
+      set(ref(db, CLOSED_BATCH_KEY), closedBatches).catch(err => console.error("Lỗi sync closed:", err));
+      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
+    }, 0);
+  }
 
-  delete activeBatches[carrier];
-  localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-
-  // 2. Cập nhật UI ngay lập tức (TRƯỚC khi gọi Firebase)
-  renderBatches();
+  renderBatches(station);
   const historyDate = document.getElementById("historyDatePicker");
   if (historyDate?.value === todayStr()) renderClosedBatches(todayStr());
   focusOrderInput();
-
-  // 3. Đồng bộ Firebase async (không ảnh hưởng local đã chốt)
-  setTimeout(() => {
-    set(ref(db, CLOSED_BATCH_KEY), closedBatches).catch(err => console.error("Lỗi sync closed:", err));
-    set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
-  }, 0);
 }
 
 function renderClosedBatches(dateStr) {
@@ -595,7 +679,7 @@ function renderClosedBatches(dateStr) {
   const downloadBtn = document.getElementById("downloadSelectedBatchesBtn");
   const selectAll = document.getElementById("selectAllBatches");
   if (!body) return;
-  const batchesForDate = closedBatches.filter(b => b.date === dateStr);
+  const batchesForDate = [...closedBatches, ...closedBatches2].filter(b => b.date === dateStr);
   body.innerHTML = "";
   if (downloadBtn) downloadBtn.style.display = "none";
   if (selectAll) selectAll.checked = false;
@@ -693,6 +777,11 @@ function saveAllData(date, dayData, newOrder) {
 }
 
 function getDayOrders(date) { return scanDataCache[date]?.orders || []; }
+function getTodayOrdersByStation(date, station) {
+  const orders = getDayOrders(date);
+  if (station === "2") return orders.filter(o => o.station === "2");
+  return orders.filter(o => !o.station || o.station === "1");
+}
 
 function getOrdersByFilter(filter) {
   const dates = Object.keys(scanDataCache);
@@ -712,10 +801,12 @@ function detectCarrier(code) {
 
 function switchPage(pageId) {
   if (pageId !== "cancelScanPage" && isCameraRunning) stopCameraScanner();
+  if (pageId !== "scanPage" && pageId !== "scanPage2" && isScanCameraRunning) stopScanPageCamera();
   activePage = pageId;
   document.querySelectorAll(".app-page").forEach(p => p.classList.toggle("active", p.id === pageId));
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
   if (pageId === "scanPage") focusOrderInput();
+  if (pageId === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
   if (pageId === "dashboardPage") renderAll();
   if (pageId === "cancelScanPage") setTimeout(() => document.getElementById("cancelScanInput")?.focus(), 0);
 }
@@ -738,7 +829,18 @@ function saveCancelledSet(list) { const unique = [...new Set(list)]; localStorag
 function loadCancelledToTextarea() { cancelledInput.value = [...getCancelledSet()].join("\n"); loadCancelledCount(); }
 function loadCancelledCount() { cancelledCount.textContent = getCancelledSet().size; }
 function normalizeCodes(text) { return text.split(/\r?\n/).map(x => x.trim()).filter(Boolean); }
-function showMessage(text, type) { scanMessage.className = `message ${type}`; scanMessage.textContent = text; }
+function showMessage(text, type, station = "1") {
+  const msgEl = station === "2" ? document.getElementById("scanMessage2") : scanMessage;
+  if (msgEl) { msgEl.className = `message ${type}`; msgEl.textContent = text; }
+  const camMsg = document.getElementById("scanCamMsgEl");
+  if (camMsg) {
+    camMsg.style.display = "block";
+    camMsg.style.background = type === "success" ? "#f0fdf4" : type === "warning" ? "#fefce8" : "#fef2f2";
+    camMsg.style.color = type === "success" ? "#15803d" : type === "warning" ? "#a16207" : "#b91c1c";
+    camMsg.textContent = text;
+    setTimeout(() => { if (camMsg) camMsg.style.display = "none"; }, 2500);
+  }
+}
 function localDateStr(d = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
@@ -805,8 +907,10 @@ function subscribeToTodayScan() {
       localDay.orders.push(order);
       scanDataCache[todayKey] = localDay;
       idbSaveDay(localDay);
-      renderBatches();
-      renderTodayList(getDayOrders(todayKey));
+      renderBatches("1");
+      renderBatches("2");
+      renderTodayList(getTodayOrdersByStation(todayKey, "1"), "todayScannedBody", "loadMoreTodayBtn", showAllTodayOrders, () => { showAllTodayOrders = true; });
+      renderTodayList(getTodayOrdersByStation(todayKey, "2"), "todayScannedBody2", "loadMoreTodayBtn2", showAllTodayOrders2, () => { showAllTodayOrders2 = true; });
     }
   });
 }
@@ -820,6 +924,7 @@ function scheduleMidnightReset() {
     document.getElementById("singleDate").value = newDay;
     currentFilter = { mode: "single", singleDate: newDay };
     showAllTodayOrders = false;
+    showAllTodayOrders2 = false;
     scheduleMidnightReset();
   }, nextMidnight - now);
 }
@@ -1040,7 +1145,7 @@ function startCameraScanner() {
   });
   html5QrScanner.start(
     { facingMode: "environment" },
-    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.4) }) },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.35) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
     (decodedText) => {
       const now = Date.now();
       if (decodedText === lastCamCode && now - lastCamTime < 2000) return;
@@ -1146,6 +1251,94 @@ async function loadAndRenderCancelReturns(date) {
       : `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
     body.appendChild(tr);
   });
+}
+
+// === CAMERA QUÉT ĐƠN CHÍNH ===
+function startScanPageCamera(station = "1") {
+  if (isScanCameraRunning) return;
+  if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải!"); return; }
+
+  const modal = document.createElement("div");
+  modal.id = "scanCameraModal";
+  modal.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:9999;display:flex;flex-direction:column;";
+  modal.innerHTML = `
+    <div style="background:#10b981;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+      <span style="font-weight:bold;font-size:17px;">📷 Quét Đơn</span>
+      <span id="scanCamCount" style="background:rgba(0,0,0,0.4);padding:4px 14px;border-radius:20px;font-size:15px;font-weight:bold;">0 đơn</span>
+    </div>
+    <div id="scanCameraModalReader" style="flex:1;position:relative;background:#000;overflow:hidden;"></div>
+    <div id="scanCamMsgEl" style="display:none;padding:10px 16px;font-weight:bold;font-size:15px;text-align:center;flex-shrink:0;white-space:pre-line;"></div>
+    <div style="background:#0f172a;padding:12px 16px;flex-shrink:0;">
+      <button id="scanCamStopBtn" style="background:#ef4444;color:white;font-weight:bold;padding:14px;border:none;border-radius:10px;font-size:16px;width:100%;cursor:pointer;">⏹ Dừng Camera</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  const updateCount = () => {
+    const el = document.getElementById("scanCamCount");
+    if (el) el.textContent = `${getTodayOrdersByStation(todayStr(), station).length} đơn`;
+  };
+  updateCount();
+
+  document.getElementById("scanCamStopBtn").addEventListener("click", stopScanPageCamera);
+
+  Object.values(audioCache).forEach(a => {
+    a.muted = true;
+    a.play().then(() => { a.pause(); a.currentTime = 0; a.muted = false; }).catch(() => { a.muted = false; });
+  });
+
+  const readerEl = document.getElementById("scanCameraModalReader");
+  const videoObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeName === "VIDEO") {
+          node.setAttribute("playsinline", "");
+          node.setAttribute("webkit-playsinline", "");
+          node.setAttribute("x-webkit-airplay", "deny");
+          node.disablePictureInPicture = true;
+          videoObserver.disconnect();
+        }
+      }
+    }
+  });
+  videoObserver.observe(readerEl, { childList: true, subtree: true });
+
+  html5QrScannerMain = new Html5Qrcode("scanCameraModalReader", {
+    formatsToSupport: [0, 3, 5, 9, 10],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+  });
+  html5QrScannerMain.start(
+    { facingMode: "environment" },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.35) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    (decodedText) => {
+      const now = Date.now();
+      if (decodedText === lastScanCamCode && now - lastScanCamTime < 2000) return;
+      lastScanCamCode = decodedText;
+      lastScanCamTime = now;
+      handleScan(decodedText.trim(), station);
+      updateCount();
+    },
+    () => {}
+  ).then(() => {
+    isScanCameraRunning = true;
+    const overlay = document.createElement("div");
+    overlay.className = "scan-line-overlay";
+    overlay.innerHTML = '<div class="scan-line"></div>';
+    readerEl.appendChild(overlay);
+  }).catch(err => {
+    document.getElementById("scanCameraModal")?.remove();
+    alert("Không thể bật camera: " + err);
+  });
+}
+
+function stopScanPageCamera() {
+  const cleanup = () => {
+    isScanCameraRunning = false;
+    html5QrScannerMain = null;
+    document.getElementById("scanCameraModal")?.remove();
+  };
+  if (!html5QrScannerMain) { cleanup(); return; }
+  html5QrScannerMain.stop().then(cleanup).catch(cleanup);
 }
 
 // === XUẤT BIÊN BẢN PDF ===
