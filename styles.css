@@ -215,7 +215,7 @@ tbody tr { transition: background-color 0.15s ease; }
 tbody tr:hover { background: #f8fafc; }
 
 tr.row-success { background: #f0fdf4; }
-tr.row-warning { background: #fefce8; }
+tr.row-warning { background: #fde047; }
 tr.row-error { background: #fef2f2; }
 
 .scan-line-overlay {

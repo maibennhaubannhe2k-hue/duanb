@@ -94,8 +94,12 @@ function openIDB() {
 
 async function idbLoadAll() {
   const idb = await openIDB();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffStr = localDateStr(cutoff);
   return new Promise((resolve, reject) => {
-    const req = idb.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).getAll();
+    const range = IDBKeyRange.lowerBound(cutoffStr);
+    const req = idb.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).getAll(range);
     req.onsuccess = () => {
       scanDataCache = {};
       const dirty = [];
@@ -179,15 +183,15 @@ async function init() {
       const dateStr = localDateStr(d);
       if (!scanDataCache[dateStr]) missingDays.push(dateStr);
     }
-    if (missingDays.length > 0) {
-      const results = await Promise.all(missingDays.map(date => get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`))));
-      results.forEach((snapshot, i) => {
+    for (const date of missingDays) {
+      try {
+        const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
         if (snapshot.exists()) {
-          const day = firebaseDayToLocal(snapshot.val(), missingDays[i]);
-          scanDataCache[missingDays[i]] = day;
+          const day = firebaseDayToLocal(snapshot.val(), date);
+          scanDataCache[date] = day;
           idbSaveDay(day);
         }
-      });
+      } catch(e) {}
     }
   } catch (err) {
     console.error("Lỗi tải Firebase:", err);
@@ -345,7 +349,9 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("singleDate")?.addEventListener("change", () => {
+  document.getElementById("singleDate")?.addEventListener("change", async () => {
+    const date = document.getElementById("singleDate").value;
+    if (date && !scanDataCache[date]) await ensureDatesInCache(date, date);
     currentFilter.fromTime = document.getElementById("fromTime")?.value || null;
     currentFilter.toTime = document.getElementById("toTime")?.value || null;
     renderAll();
@@ -389,11 +395,12 @@ function bindEvents() {
     }
   });
 
-  document.getElementById("applyFilterBtn")?.addEventListener("click", () => {
+  document.getElementById("applyFilterBtn")?.addEventListener("click", async () => {
     const f = document.getElementById("fromDate").value;
     const t = document.getElementById("toDate").value;
     if (f && t) {
       currentFilter = { mode: "range", fromDate: f, toDate: t, fromTime: document.getElementById("fromTime").value || null, toTime: document.getElementById("toTime").value || null };
+      await ensureDatesInCache(f, t);
       renderAll();
     } else alert("Vui lòng chọn cả Từ ngày và Đến ngày!");
   });
@@ -428,7 +435,7 @@ function bindEvents() {
     renderClosedBatches(date);
   });
 
-  historySearchInput?.addEventListener("input", (e) => {
+  historySearchInput?.addEventListener("input", async (e) => {
     const raw = e.target.value.trim();
     if (!raw) {
       const date = historyDatePicker?.value;
@@ -438,9 +445,21 @@ function bindEvents() {
     }
     const terms = raw.toLowerCase().split(/\s+/).filter(t => t.length >= 3);
     if (terms.length === 0) return;
+    // Tìm trong cache (30 ngày gần)
     let results = [];
+    const cachedKeys = new Set();
     Object.keys(scanDataCache).forEach(date => {
-      results = results.concat((scanDataCache[date].orders || []).filter(o => o && terms.some(t => o.code.toLowerCase().includes(t))));
+      (scanDataCache[date].orders || []).forEach(o => {
+        if (o && terms.some(t => o.code.toLowerCase().includes(t))) {
+          results.push(o);
+          cachedKeys.add(`${o.code}|${o.time}`);
+        }
+      });
+    });
+    // Tìm thêm trong IDB (full lịch sử)
+    const idbResults = await idbSearchOrders(terms);
+    idbResults.forEach(o => {
+      if (!cachedKeys.has(`${o.code}|${o.time}`)) results.push(o);
     });
     renderHistoryTable(results, `Kết quả tìm kiếm: ${terms.join(", ")}`);
   });
@@ -536,7 +555,8 @@ function handleScan(code, station = "1") {
     status = STATUS.DUPLICATE;
     const diffDays = Math.floor((Date.now() - new Date(duplicateOriginal.time)) / 86400000);
     const daysText = diffDays === 0 ? "hôm nay" : `${diffDays} ngày trước`;
-    showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})`, "warning", station);
+    const batchInfo = duplicateOriginal.batchId ? ` — Lô: ${duplicateOriginal.batchId}` : "";
+    showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})${batchInfo}`, "warning", station);
     playTone("warning");
   } else {
     status = STATUS.SUCCESS;
@@ -797,6 +817,39 @@ function saveAllData(date, dayData, newOrder) {
   idbSaveDay(dayData);
   if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date);
   push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
+}
+
+async function idbSearchOrders(terms) {
+  const idb = await openIDB();
+  return new Promise(resolve => {
+    const results = [];
+    const req = idb.transaction(IDB_STORE, "readonly").objectStore(IDB_STORE).openCursor();
+    req.onsuccess = e => {
+      const cursor = e.target.result;
+      if (cursor) {
+        (cursor.value?.orders || []).forEach(o => {
+          if (o && terms.some(t => o.code.toLowerCase().includes(t))) results.push(o);
+        });
+        cursor.continue();
+      } else resolve(results);
+    };
+    req.onerror = () => resolve([]);
+  });
+}
+
+async function ensureDatesInCache(fromDate, toDate) {
+  const d = new Date(fromDate);
+  while (localDateStr(d) <= toDate) {
+    const ds = localDateStr(d);
+    if (!scanDataCache[ds]) {
+      try {
+        const snap = await get(ref(db, `${FIREBASE_SCAN_KEY}/${ds}`));
+        scanDataCache[ds] = snap.exists() ? firebaseDayToLocal(snap.val(), ds) : { date: ds, orders: [] };
+        if (snap.exists()) idbSaveDay(scanDataCache[ds]);
+      } catch(e) {}
+    }
+    d.setDate(d.getDate() + 1);
+  }
 }
 
 function initTimeSelects() {
@@ -1096,7 +1149,10 @@ function handleCancelScan(code) {
   updateCamCount();
   saveCancelReturn(true);
   if (result.found) {
-    showCancelScanMsg(`✅ Đã quét thành công: ${code}`, "#10b981");
+    const sttText = result.stt !== "-" ? `STT ${result.stt}/${result.total}` : "";
+    const batchText = result.batchId !== "-" ? `Lô: ${result.batchId}` : "";
+    const extra = [batchText, sttText].filter(Boolean).join(" — ");
+    showCancelScanMsg(`✅ ${code}${extra ? "\n" + extra : ""}`, "#10b981");
     playTone("success");
     clearTimeout(scanMsgTimer);
     scanMsgTimer = setTimeout(() => {
@@ -1104,7 +1160,7 @@ function handleCancelScan(code) {
       if (el) el.style.display = "none";
       const camMsg = document.getElementById("camMsgEl");
       if (camMsg) camMsg.style.display = "none";
-    }, 1500);
+    }, 2500);
   } else {
     showCancelScanMsg(`❌ Không tìm thấy mã ${code} trong 10 ngày gần nhất`, "#ef4444");
     playTone("error");
@@ -1118,6 +1174,7 @@ function showCancelScanMsg(text, color) {
     el.style.background = color + "20";
     el.style.color = color;
     el.style.border = `1px solid ${color}`;
+    el.style.whiteSpace = "pre-line";
     el.textContent = text;
   }
   const camMsg = document.getElementById("camMsgEl");
@@ -1125,6 +1182,7 @@ function showCancelScanMsg(text, color) {
     camMsg.style.display = "block";
     camMsg.style.background = color + "20";
     camMsg.style.color = color;
+    camMsg.style.whiteSpace = "pre-line";
     camMsg.textContent = text;
   }
 }
