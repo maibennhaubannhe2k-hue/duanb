@@ -504,10 +504,6 @@ function bindEvents() {
     if (document.hidden && isScanCameraRunning) stopScanPageCamera();
   });
 
-  // Sync offline data khi mạng vừa kết nối lại
-  onValue(ref(db, ".info/connected"), (snapshot) => {
-    if (snapshot.val() === true) syncLocalToFirebase();
-  });
 
   bindCancelScanEvents();
 }
@@ -1088,7 +1084,7 @@ async function syncLocalToFirebase() {
 
   const dates = Object.keys(scanDataCache)
     .filter(d => (scanDataCache[d]?.orders?.length || 0) > 0)
-    .sort().reverse().slice(0, 30);
+    .sort().reverse().slice(0, 3);
   if (dates.length === 0) return;
 
   try {
