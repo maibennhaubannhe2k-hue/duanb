@@ -157,6 +157,30 @@ async function idbDeleteOld(keepDays) {
 // === 4. KHỞI CHẠY ===
 init();
 
+function setProgress(percent, text) {
+  const bar = document.getElementById("loadingBar");
+  const pct = document.getElementById("loadingPercent");
+  const txt = document.getElementById("loadingText");
+  if (bar) bar.style.width = percent + "%";
+  if (pct) pct.textContent = percent + "%";
+  if (txt) txt.textContent = text;
+}
+
+function hideLoading() {
+  const overlay = document.getElementById("loadingOverlay");
+  if (!overlay) return;
+  setProgress(100, "Hoàn tất!");
+  // Mở khóa input scan sau khi data đã sẵn sàng
+  if (orderInput) orderInput.disabled = false;
+  const orderInput2El = document.getElementById("orderInput2");
+  if (orderInput2El) orderInput2El.disabled = false;
+  setTimeout(() => {
+    overlay.style.transition = "opacity 0.4s ease";
+    overlay.style.opacity = "0";
+    setTimeout(() => overlay.remove(), 400);
+  }, 300);
+}
+
 async function init() {
   // Xóa dữ liệu cũ khỏi localStorage (đã chuyển sang IndexedDB) để Firebase có chỗ lưu trạng thái kết nối
   localStorage.removeItem("warehouse_scan_data_v1");
@@ -167,8 +191,15 @@ async function init() {
   bindEvents();
   switchPage("scanPage");
 
+  // Khóa input scan cho đến khi load xong — tránh quét trùng do data chưa sẵn sàng
+  const orderInput2El = document.getElementById("orderInput2");
+  if (orderInput) orderInput.disabled = true;
+  if (orderInput2El) orderInput2El.disabled = true;
+
   // 1. Load từ IndexedDB trước (nhanh, không cần mạng)
+  setProgress(10, "Đọc dữ liệu cục bộ...");
   await idbLoadAll();
+  setProgress(20, "Dọn dữ liệu cũ...");
   // 2. Xóa dữ liệu cũ hơn 120 ngày
   await idbDeleteOld(120);
   // 2b. Đặt lịch reset ngày lúc 00:00 (đổi listener Firebase, reset filter)
@@ -183,7 +214,9 @@ async function init() {
       const dateStr = localDateStr(d);
       if (!scanDataCache[dateStr]) missingDays.push(dateStr);
     }
-    for (const date of missingDays) {
+    setProgress(20, `Đang tải dữ liệu... (0/${missingDays.length})`);
+    for (let i = 0; i < missingDays.length; i++) {
+      const date = missingDays[i];
       try {
         const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
         if (snapshot.exists()) {
@@ -192,15 +225,18 @@ async function init() {
           idbSaveDay(day);
         }
       } catch(e) {}
+      setProgress(20 + Math.round(((i + 1) / missingDays.length) * 60), `Đang tải dữ liệu... (${i + 1}/${missingDays.length})`);
     }
   } catch (err) {
     console.error("Lỗi tải Firebase:", err);
   }
 
+  setProgress(85, "Hiển thị dữ liệu...");
   renderAll();
   renderBatches("1");
   renderBatches("2");
 
+  setProgress(95, "Kết nối realtime...");
   subscribeToTodayScan();
   syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
 
@@ -283,6 +319,8 @@ async function init() {
       renderBatches("2");
     }
   }, (err) => console.error("❌ Lỗi sync xe 2:", err));
+
+  hideLoading();
 }
 
 // === 5. SỰ KIỆN ===
@@ -584,7 +622,23 @@ function renderAll() {
   };
   duplicateOrders.parentElement.onclick = () => {
     switchPage("historyPage");
-    renderHistoryTable(dOrders, `Danh sách ĐƠN TRÙNG ngày ${currentFilter.singleDate}`);
+    // Lấy tất cả lần quét của những mã bị trùng (cả SUCCESS lẫn DUPLICATE)
+    const dupCodes = new Set(dOrders.map(o => o.code));
+    const allDupOrders = filteredOrders.filter(o => dupCodes.has(o.code));
+
+    // Thêm toàn bộ lịch sử các ngày khác (tối đa 10 ngày trong cache)
+    const currentDate = currentFilter.singleDate;
+    Object.keys(scanDataCache)
+      .filter(d => d !== currentDate)
+      .sort().reverse()
+      .slice(0, 10)
+      .forEach(dateKey => {
+        (scanDataCache[dateKey]?.orders || []).forEach(o => {
+          if (dupCodes.has(o.code)) allDupOrders.push(o);
+        });
+      });
+
+    renderHistoryTable(allDupOrders, `Danh sách ĐƠN TRÙNG ngày ${currentFilter.singleDate}`, true);
   };
 
   if (activePage === "dashboardPage") {
@@ -762,12 +816,26 @@ window.downloadBatch = async function(batchId, carrier, dateStr, createdDate) {
   }
 }
 
-function renderHistoryTable(orders, title) {
+function renderHistoryTable(orders, title, groupByCode = false) {
   historyDetailBody.innerHTML = "";
   historyTitle.innerHTML = `${title} <br> <span style="color:#ee4d2d;font-size:20px;font-weight:bold;">📊 TỔNG CỘNG: ${orders.length} ĐƠN</span>`;
-  [...orders].reverse().forEach(o => {
+
+  const sorted = groupByCode
+    ? [...orders].sort((a, b) => a.code.localeCompare(b.code))
+    : [...orders].reverse();
+
+  const palette = ["#fde68a","#bbf7d0","#bfdbfe","#fecaca","#ddd6fe","#fed7aa","#a7f3d0","#fda4af","#e9d5ff","#99f6e4"];
+  const codeColorMap = {};
+  let colorIdx = 0;
+
+  sorted.forEach(o => {
     const tr = document.createElement("tr");
-    tr.className = statusClass[o.status];
+    if (groupByCode) {
+      if (!(o.code in codeColorMap)) codeColorMap[o.code] = palette[colorIdx++ % palette.length];
+      tr.style.background = codeColorMap[o.code];
+    } else {
+      tr.className = statusClass[o.status];
+    }
     tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
     historyDetailBody.appendChild(tr);
   });
