@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, push, onValue, onChildAdded, get } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, onChildAdded, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -38,7 +38,7 @@ let currentFilter = { mode: "single", singleDate: todayStr() };
 let carrierChart = null;
 let activePage = "scanPage";
 let showAllTodayOrders = false;
-let lastSyncTs = 0;
+let lastSyncTs = parseInt(localStorage.getItem("warehouse_last_sync_ts") || "0");
 
 // Tra cứu đơn hủy xe
 let cancelScanList = [];
@@ -216,29 +216,20 @@ async function init() {
     }
   });
 
-  // Closed batches: chỉ THÊM từ Firebase, không bao giờ xóa entry local
-  // Nếu thiết bị khác chốt xe → xóa khỏi activeBatches local
-  onValue(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
-    const data = snapshot.val();
-    if (!data) return;
-    const fromFirebase = Array.isArray(data) ? data : Object.values(data);
-    const localKeys = new Set(closedBatches.map(b => `${b.id}|${b.carrier}`));
-    let addedClosed = false;
-    let removedActive = false;
-    fromFirebase.forEach(b => {
-      if (!localKeys.has(`${b.id}|${b.carrier}`)) {
-        closedBatches.push(b);
-        addedClosed = true;
-      }
-      // Nếu xe đã chốt vẫn đang hiện trong activeBatches → xóa đi
-      if (activeBatches[b.carrier]?.id === b.id) {
-        delete activeBatches[b.carrier];
-        removedActive = true;
-      }
-    });
-    if (addedClosed) localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
-    if (removedActive) localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-    if (addedClosed || removedActive) renderBatches("1");
+  // Closed batches: onChildAdded chỉ nhận entry mới, không tải lại cả mảng
+  onChildAdded(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
+    const b = snapshot.val();
+    if (!b || !b.id || !b.carrier) return;
+    const alreadyLocal = closedBatches.some(x => x.id === b.id && x.carrier === b.carrier);
+    if (!alreadyLocal) {
+      closedBatches.push(b);
+      localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
+    }
+    if (activeBatches[b.carrier]?.id === b.id) {
+      delete activeBatches[b.carrier];
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+      renderBatches("1");
+    }
   });
 
   // Active batches: chỉ THÊM xe mới từ Firebase (thiết bị khác tạo)
@@ -260,19 +251,19 @@ async function init() {
   }, (err) => console.error("❌ Lỗi sync xe:", err));
 
   // Station 2 - closed batches
-  onValue(ref(db, CLOSED_BATCH_KEY_2), (snapshot) => {
-    const data = snapshot.val();
-    if (!data) return;
-    const fromFirebase = Array.isArray(data) ? data : Object.values(data);
-    const localKeys = new Set(closedBatches2.map(b => `${b.id}|${b.carrier}`));
-    let addedClosed = false, removedActive = false;
-    fromFirebase.forEach(b => {
-      if (!localKeys.has(`${b.id}|${b.carrier}`)) { closedBatches2.push(b); addedClosed = true; }
-      if (activeBatches2[b.carrier]?.id === b.id) { delete activeBatches2[b.carrier]; removedActive = true; }
-    });
-    if (addedClosed) localStorage.setItem(CLOSED_BATCH_KEY_2, JSON.stringify(closedBatches2));
-    if (removedActive) localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
-    if (addedClosed || removedActive) renderBatches("2");
+  onChildAdded(ref(db, CLOSED_BATCH_KEY_2), (snapshot) => {
+    const b = snapshot.val();
+    if (!b || !b.id || !b.carrier) return;
+    const alreadyLocal = closedBatches2.some(x => x.id === b.id && x.carrier === b.carrier);
+    if (!alreadyLocal) {
+      closedBatches2.push(b);
+      localStorage.setItem(CLOSED_BATCH_KEY_2, JSON.stringify(closedBatches2));
+    }
+    if (activeBatches2[b.carrier]?.id === b.id) {
+      delete activeBatches2[b.carrier];
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+      renderBatches("2");
+    }
   });
 
   // Station 2 - active batches
@@ -698,7 +689,7 @@ window.closeBatch = function(carrier, station = "1") {
     delete activeBatches2[carrier];
     localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
     setTimeout(() => {
-      set(ref(db, CLOSED_BATCH_KEY_2), closedBatches2).catch(err => console.error("Lỗi sync closed2:", err));
+      push(ref(db, CLOSED_BATCH_KEY_2), closedEntry).catch(err => console.error("Lỗi sync closed2:", err));
       set(ref(db, `${ACTIVE_BATCH_KEY_2}/${carrier}`), null).catch(err => console.error("Lỗi xóa active2:", err));
     }, 0);
   } else {
@@ -708,7 +699,7 @@ window.closeBatch = function(carrier, station = "1") {
     delete activeBatches[carrier];
     localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
     setTimeout(() => {
-      set(ref(db, CLOSED_BATCH_KEY), closedBatches).catch(err => console.error("Lỗi sync closed:", err));
+      push(ref(db, CLOSED_BATCH_KEY), closedEntry).catch(err => console.error("Lỗi sync closed:", err));
       set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
     }, 0);
   }
@@ -1046,7 +1037,15 @@ let isBatchPushing = false;
 function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
   const todayKey = todayStr();
-  unsubscribeTodayScan = onChildAdded(ref(db, `${FIREBASE_SCAN_KEY}/${todayKey}/orders`), (snapshot) => {
+  const localOrders = scanDataCache[todayKey]?.orders || [];
+  const lastTime = localOrders.length
+    ? localOrders.reduce((max, o) => (o.time > max ? o.time : max), "")
+    : "";
+  const ordersRef = ref(db, `${FIREBASE_SCAN_KEY}/${todayKey}/orders`);
+  const ordersQuery = lastTime
+    ? query(ordersRef, orderByChild("time"), startAfter(lastTime))
+    : ordersRef;
+  unsubscribeTodayScan = onChildAdded(ordersQuery, (snapshot) => {
     const order = snapshot.val();
     if (!order || !order.code || !order.time) return;
     const localDay = scanDataCache[todayKey] || { date: todayKey, orders: [] };
@@ -1081,12 +1080,13 @@ function scheduleMidnightReset() {
 // So sánh IDB local vs Firebase, ngày nào local nhiều hơn thì đẩy lên
 // Throttle 5 phút để tránh gọi liên tục khi chuyển tab
 async function syncLocalToFirebase() {
-  if (Date.now() - lastSyncTs < 5 * 60 * 1000) return;
+  if (Date.now() - lastSyncTs < 30 * 60 * 1000) return;
   lastSyncTs = Date.now();
+  localStorage.setItem("warehouse_last_sync_ts", lastSyncTs);
 
   const dates = Object.keys(scanDataCache)
-    .filter(d => (scanDataCache[d]?.orders?.length || 0) > 0)
-    .sort().reverse().slice(0, 3);
+    .filter(d => d < todayStr() && (scanDataCache[d]?.orders?.length || 0) > 0)
+    .sort().reverse().slice(0, 2);
   if (dates.length === 0) return;
 
   try {
