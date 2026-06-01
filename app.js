@@ -1042,8 +1042,12 @@ function subscribeToTodayScan() {
     ? localOrders.reduce((max, o) => (o.time > max ? o.time : max), "")
     : "";
   const ordersRef = ref(db, `${FIREBASE_SCAN_KEY}/${todayKey}/orders`);
-  const ordersQuery = lastTime
-    ? query(ordersRef, orderByChild("time"), startAfter(lastTime))
+  // Trừ 30 phút để bù lệch đồng hồ giữa các máy — duplicate sẽ bị lọc bởi alreadyExists
+  const bufferedTime = lastTime
+    ? new Date(new Date(lastTime).getTime() - 30 * 60 * 1000).toISOString()
+    : "";
+  const ordersQuery = bufferedTime
+    ? query(ordersRef, orderByChild("time"), startAfter(bufferedTime))
     : ordersRef;
   unsubscribeTodayScan = onChildAdded(ordersQuery, (snapshot) => {
     const order = snapshot.val();
@@ -1078,7 +1082,7 @@ function scheduleMidnightReset() {
 
 // === SYNC OFFLINE DATA LÊN FIREBASE ===
 // So sánh IDB local vs Firebase, ngày nào local nhiều hơn thì đẩy lên
-// Throttle 5 phút để tránh gọi liên tục khi chuyển tab
+// Throttle 30 phút, persist qua localStorage để không reset khi reload trang
 async function syncLocalToFirebase() {
   if (Date.now() - lastSyncTs < 30 * 60 * 1000) return;
   lastSyncTs = Date.now();
