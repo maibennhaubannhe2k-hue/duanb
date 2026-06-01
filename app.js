@@ -205,7 +205,7 @@ async function init() {
   // 2b. Đặt lịch reset ngày lúc 00:00 (đổi listener Firebase, reset filter)
   scheduleMidnightReset();
 
-  // 3. Chỉ fetch ngày chưa có trong IDB (hôm nay do onValue lo, bỏ qua)
+  // 3. Fetch song song các ngày chưa có trong IDB
   try {
     const missingDays = [];
     for (let i = 1; i <= 10; i++) {
@@ -214,21 +214,37 @@ async function init() {
       const dateStr = localDateStr(d);
       if (!scanDataCache[dateStr]) missingDays.push(dateStr);
     }
-    setProgress(20, `Đang tải dữ liệu... (0/${missingDays.length})`);
-    for (let i = 0; i < missingDays.length; i++) {
-      const date = missingDays[i];
-      try {
-        const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
-        if (snapshot.exists()) {
-          const day = firebaseDayToLocal(snapshot.val(), date);
-          scanDataCache[date] = day;
-          idbSaveDay(day);
-        }
-      } catch(e) {}
-      setProgress(20 + Math.round(((i + 1) / missingDays.length) * 60), `Đang tải dữ liệu... (${i + 1}/${missingDays.length})`);
+    if (missingDays.length > 0) {
+      setProgress(20, `Đang tải dữ liệu... (0/${missingDays.length})`);
+      let loaded = 0;
+      await Promise.all(missingDays.map(async date => {
+        try {
+          const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
+          if (snapshot.exists()) {
+            const day = firebaseDayToLocal(snapshot.val(), date);
+            scanDataCache[date] = day;
+            idbSaveDay(day);
+          }
+        } catch(e) {}
+        loaded++;
+        setProgress(20 + Math.round((loaded / missingDays.length) * 50), `Đang tải dữ liệu... (${loaded}/${missingDays.length})`);
+      }));
     }
   } catch (err) {
     console.error("Lỗi tải Firebase:", err);
+  }
+
+  // 4. Pre-fetch hôm nay nếu chưa có trong IDB — để subscribeToTodayScan dùng startAfter hiệu quả
+  setProgress(72, "Tải dữ liệu hôm nay...");
+  if (!scanDataCache[todayStr()]?.orders?.length) {
+    try {
+      const snap = await get(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`));
+      if (snap.exists()) {
+        const day = firebaseDayToLocal(snap.val(), todayStr());
+        scanDataCache[todayStr()] = day;
+        idbSaveDay(day);
+      }
+    } catch(e) {}
   }
 
   setProgress(85, "Hiển thị dữ liệu...");
@@ -665,7 +681,8 @@ function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "load
     const tr = document.createElement("tr");
     tr.className = statusClass[o.status];
     tr.style.background = rowBg[o.status] || "";
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
+    const stationLabel = o.station === "2" ? " <span style='font-size:11px;color:#7c3aed;font-weight:bold;'>(Quét 2)</span>" : " <span style='font-size:11px;color:#2563eb;font-weight:bold;'>(Quét 1)</span>";
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
     body.appendChild(tr);
   });
   if (btn) {
@@ -836,7 +853,8 @@ function renderHistoryTable(orders, title, groupByCode = false) {
     } else {
       tr.className = statusClass[o.status];
     }
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}</td><td>${statusLabel[o.status]}</td>`;
+    const stationLabel = o.station === "2" ? " <span style='font-size:11px;color:#7c3aed;font-weight:bold;'>(Quét 2)</span>" : " <span style='font-size:11px;color:#2563eb;font-weight:bold;'>(Quét 1)</span>";
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
     historyDetailBody.appendChild(tr);
   });
 }
@@ -1117,6 +1135,7 @@ function subscribeToTodayScan() {
   const ordersQuery = bufferedTime
     ? query(ordersRef, orderByChild("time"), startAfter(bufferedTime))
     : ordersRef;
+  let renderTimer = null;
   unsubscribeTodayScan = onChildAdded(ordersQuery, (snapshot) => {
     const order = snapshot.val();
     if (!order || !order.code || !order.time) return;
@@ -1125,11 +1144,14 @@ function subscribeToTodayScan() {
     if (!alreadyExists) {
       localDay.orders.push(order);
       scanDataCache[todayKey] = localDay;
-      idbSaveDay(localDay);
-      renderBatches("1");
-      renderBatches("2");
-      renderTodayList(getTodayOrdersByStation(todayKey, "1"), "todayScannedBody", "loadMoreTodayBtn", showAllTodayOrders, () => { showAllTodayOrders = true; });
-      renderTodayList(getTodayOrdersByStation(todayKey, "2"), "todayScannedBody2", "loadMoreTodayBtn2", showAllTodayOrders2, () => { showAllTodayOrders2 = true; });
+      clearTimeout(renderTimer);
+      renderTimer = setTimeout(() => {
+        idbSaveDay(localDay);
+        renderBatches("1");
+        renderBatches("2");
+        renderTodayList(getTodayOrdersByStation(todayKey, "1"), "todayScannedBody", "loadMoreTodayBtn", showAllTodayOrders, () => { showAllTodayOrders = true; });
+        renderTodayList(getTodayOrdersByStation(todayKey, "2"), "todayScannedBody2", "loadMoreTodayBtn2", showAllTodayOrders2, () => { showAllTodayOrders2 = true; });
+      }, 300);
     }
   });
 }
