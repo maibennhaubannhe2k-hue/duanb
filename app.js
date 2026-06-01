@@ -470,19 +470,20 @@ function bindEvents() {
     document.querySelectorAll(".batch-checkbox").forEach(cb => cb.checked = e.target.checked);
   });
 
-  document.getElementById("downloadSelectedBatchesBtn")?.addEventListener("click", () => {
+  document.getElementById("downloadSelectedBatchesBtn")?.addEventListener("click", async () => {
     const selected = [...document.querySelectorAll(".batch-checkbox:checked")];
     if (selected.length === 0) return alert("Vui lòng chọn ít nhất 1 xe!");
     const rows = [];
-    selected.forEach(cb => {
+    for (const cb of selected) {
       const { id, carrier, date, createddate } = cb.dataset;
       const fromDate = createddate || date;
+      await ensureDatesInCache(fromDate, date);
       const orders = Object.values(scanDataCache)
         .filter(day => day.date >= fromDate && day.date <= date)
         .flatMap(day => day.orders || [])
         .filter(o => o.batchId === id && o.carrier === carrier && o.status === STATUS.SUCCESS);
       orders.forEach(o => rows.push({ "Lô/Xe": o.batchId, "DVVC": o.carrier, "Thời gian": formatTime(o.time), "Mã đơn": o.code }));
-    });
+    }
     exportOrdersToExcel(rows, `BanGiao_NhieuXe_${todayStr()}.xlsx`);
   });
 
@@ -756,8 +757,9 @@ function renderClosedBatches(dateStr) {
   });
 }
 
-window.downloadBatch = function(batchId, carrier, dateStr, createdDate) {
+window.downloadBatch = async function(batchId, carrier, dateStr, createdDate) {
   const fromDate = createdDate || dateStr;
+  await ensureDatesInCache(fromDate, dateStr);
   const batchOrders = Object.values(scanDataCache)
     .filter(day => day.date >= fromDate && day.date <= dateStr)
     .flatMap(day => day.orders || [])
