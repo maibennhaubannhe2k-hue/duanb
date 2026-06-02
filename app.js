@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, push, onValue, onChildAdded, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onValue, onChildAdded, onChildRemoved, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -54,6 +54,8 @@ let lastScanCamCode = "";
 let lastScanCamTime = 0;
 let cancelReturnCache = {};
 let scanMsgTimer = null;
+let idbSaveTimer = null;
+let scanRenderTimer = null;
 
 // Cache trong RAM — toàn bộ code đọc từ đây (sync), ghi xuống IDB + Firebase (async)
 let scanDataCache = {};
@@ -234,16 +236,24 @@ async function init() {
     console.error("Lỗi tải Firebase:", err);
   }
 
-  // 4. Pre-fetch hôm nay nếu chưa có trong IDB — để subscribeToTodayScan dùng startAfter hiệu quả
+  // 4. Fetch hôm nay từ Firebase, throttle 5 phút/lần để tránh tốn bandwidth khi refresh liên tục
   setProgress(72, "Tải dữ liệu hôm nay...");
-  if (!scanDataCache[todayStr()]?.orders?.length) {
+  const todayFetchKey = `lastTodayFetch_${todayStr()}`;
+  const lastTodayFetch = parseInt(sessionStorage.getItem(todayFetchKey) || "0");
+  if (Date.now() - lastTodayFetch > 5 * 60 * 1000) {
     try {
       const snap = await get(ref(db, `${FIREBASE_SCAN_KEY}/${todayStr()}`));
       if (snap.exists()) {
-        const day = firebaseDayToLocal(snap.val(), todayStr());
-        scanDataCache[todayStr()] = day;
-        idbSaveDay(day);
+        const firebaseDay = firebaseDayToLocal(snap.val(), todayStr());
+        const localDay = scanDataCache[todayStr()] || { date: todayStr(), orders: [] };
+        const localKeys = new Set(localDay.orders.map(o => `${o.code}|${o.time}`));
+        firebaseDay.orders.forEach(o => {
+          if (!localKeys.has(`${o.code}|${o.time}`)) localDay.orders.push(o);
+        });
+        scanDataCache[todayStr()] = localDay;
+        idbSaveDay(localDay);
       }
+      sessionStorage.setItem(todayFetchKey, String(Date.now()));
     } catch(e) {}
   }
 
@@ -284,23 +294,26 @@ async function init() {
     }
   });
 
-  // Active batches: chỉ THÊM xe mới từ Firebase (thiết bị khác tạo)
-  onValue(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
-    const firebaseBatches = snapshot.val() || {};
+  // Active batches: onChildAdded/Removed — chỉ nhận delta, không tải lại toàn bộ
+  onChildAdded(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
+    const carrier = snapshot.key;
+    const batch = snapshot.val();
+    if (!batch || !batch.id) return;
     const closedIds = new Set(closedBatches.map(b => b.id));
-    let changed = false;
-    Object.keys(firebaseBatches).forEach(carrier => {
-      const batch = firebaseBatches[carrier];
-      if (!activeBatches[carrier] && !closedIds.has(batch.id)) {
-        activeBatches[carrier] = batch;
-        changed = true;
-      }
-    });
-    if (changed) {
+    if (!activeBatches[carrier] && !closedIds.has(batch.id)) {
+      activeBatches[carrier] = batch;
       localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
       renderBatches("1");
     }
   }, (err) => console.error("❌ Lỗi sync xe:", err));
+  onChildRemoved(ref(db, ACTIVE_BATCH_KEY), (snapshot) => {
+    const carrier = snapshot.key;
+    if (activeBatches[carrier]) {
+      delete activeBatches[carrier];
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
+      renderBatches("1");
+    }
+  });
 
   // Station 2 - closed batches
   onChildAdded(ref(db, CLOSED_BATCH_KEY_2), (snapshot) => {
@@ -318,23 +331,26 @@ async function init() {
     }
   });
 
-  // Station 2 - active batches
-  onValue(ref(db, ACTIVE_BATCH_KEY_2), (snapshot) => {
-    const firebaseBatches = snapshot.val() || {};
+  // Station 2 - active batches: onChildAdded/Removed — chỉ nhận delta
+  onChildAdded(ref(db, ACTIVE_BATCH_KEY_2), (snapshot) => {
+    const carrier = snapshot.key;
+    const batch = snapshot.val();
+    if (!batch || !batch.id) return;
     const closedIds = new Set(closedBatches2.map(b => b.id));
-    let changed = false;
-    Object.keys(firebaseBatches).forEach(carrier => {
-      const batch = firebaseBatches[carrier];
-      if (!activeBatches2[carrier] && !closedIds.has(batch.id)) {
-        activeBatches2[carrier] = batch;
-        changed = true;
-      }
-    });
-    if (changed) {
+    if (!activeBatches2[carrier] && !closedIds.has(batch.id)) {
+      activeBatches2[carrier] = batch;
       localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
       renderBatches("2");
     }
   }, (err) => console.error("❌ Lỗi sync xe 2:", err));
+  onChildRemoved(ref(db, ACTIVE_BATCH_KEY_2), (snapshot) => {
+    const carrier = snapshot.key;
+    if (activeBatches2[carrier]) {
+      delete activeBatches2[carrier];
+      localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
+      renderBatches("2");
+    }
+  });
 
   hideLoading();
 }
@@ -461,23 +477,38 @@ function bindEvents() {
     renderAll();
   });
 
-  historyDatePicker?.addEventListener("change", async (e) => {
-    const date = e.target.value;
-    // Nếu ngày cũ hơn 7 ngày, thử tải từ Firebase
-    const cutoff = new Date();
-    cutoff.setDate(cutoff.getDate() - 7);
-    if (date < localDateStr(cutoff) && !scanDataCache[date]) {
+  const historyFetchedDates = new Map(); // date → timestamp, tự hết hạn sau 5 phút
+  const loadHistoryDate = async (date) => {
+    if (!date) return;
+    const btn = document.getElementById("historyDateLoadBtn");
+    const lastFetch = historyFetchedDates.get(date) || 0;
+    if (Date.now() - lastFetch > 5 * 60 * 1000) {
+      if (btn) { btn.disabled = true; btn.textContent = "⏳ Đang tải..."; }
       try {
         const snapshot = await get(ref(db, `${FIREBASE_SCAN_KEY}/${date}`));
         if (snapshot.exists()) {
-          const day = firebaseDayToLocal(snapshot.val(), date);
-          scanDataCache[date] = day;
-          idbSaveDay(day);
+          const firebaseDay = firebaseDayToLocal(snapshot.val(), date);
+          const localDay = scanDataCache[date] || { date, orders: [] };
+          const localKeys = new Set(localDay.orders.map(o => `${o.code}|${o.time}`));
+          firebaseDay.orders.forEach(o => {
+            if (!localKeys.has(`${o.code}|${o.time}`)) localDay.orders.push(o);
+          });
+          scanDataCache[date] = localDay;
+          idbSaveDay(localDay);
         }
-      } catch (err) { console.error("Lỗi tải ngày cũ:", err); }
+        historyFetchedDates.set(date, Date.now());
+      } catch (err) { console.error("Lỗi tải ngày:", err); }
+      if (btn) { btn.disabled = false; btn.textContent = "📂 Xem"; }
     }
     renderHistoryTable(getDayOrders(date), `Lịch sử ngày ${date}`);
     renderClosedBatches(date);
+  };
+
+  document.getElementById("historyDateLoadBtn")?.addEventListener("click", () => {
+    loadHistoryDate(historyDatePicker?.value);
+  });
+  historyDatePicker?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadHistoryDate(historyDatePicker.value);
   });
 
   const doHistorySearch = async () => {
@@ -612,9 +643,12 @@ function handleScan(code, station = "1") {
   day.orders.push(newOrder);
   scanDataCache[date] = day;
   saveAllData(date, day, newOrder);
-  renderAll();
-  renderBatches("1");
-  renderBatches("2");
+  clearTimeout(scanRenderTimer);
+  scanRenderTimer = setTimeout(() => {
+    renderAll();
+    renderBatches("1");
+    renderBatches("2");
+  }, 300);
 }
 
 // === 7. RENDER ===
@@ -682,7 +716,7 @@ function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "load
     tr.className = statusClass[o.status];
     tr.style.background = rowBg[o.status] || "";
     const stationLabel = o.station === "2" ? " <span style='font-size:11px;color:#7c3aed;font-weight:bold;'>(Quét 2)</span>" : " <span style='font-size:11px;color:#2563eb;font-weight:bold;'>(Quét 1)</span>";
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${escHtml(o.code)}</td><td>${escHtml(o.carrier)}</td><td>${escHtml(o.batchId || '-')}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
     body.appendChild(tr);
   });
   if (btn) {
@@ -714,13 +748,13 @@ function renderBatches(station = "1") {
     if (isStale) tr.style.background = "#fff7ed";
     const tdName = document.createElement("td");
     tdName.innerHTML = isStale
-      ? `<strong style="color:#dc2626;">${batch.id}</strong><br><span style="font-size:13px;color:#dc2626;">⚠️ ${carrier} — tạo ngày ${batch.createdDate}</span>`
-      : `<strong style="color:blue;">${batch.id}</strong><br><span style="font-size:13px;">${carrier}</span>`;
+      ? `<strong style="color:#dc2626;">${escHtml(batch.id)}</strong><br><span style="font-size:13px;color:#dc2626;">⚠️ ${escHtml(carrier)} — tạo ngày ${batch.createdDate}</span>`
+      : `<strong style="color:blue;">${escHtml(batch.id)}</strong><br><span style="font-size:13px;">${escHtml(carrier)}</span>`;
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
     const fromDate = batch.createdDate || todayStr();
     const realCount = Object.values(scanDataCache)
-      .filter(day => day.date >= fromDate)
+      .filter(day => day.date >= fromDate && day.date <= todayStr())
       .flatMap(day => day.orders || [])
       .filter(o => o.batchId === batch.id && o.carrier === carrier && o.status === STATUS.SUCCESS)
       .length;
@@ -738,13 +772,15 @@ function renderBatches(station = "1") {
   });
 }
 
-window.closeBatch = function(carrier, station = "1") {
+window.closeBatch = async function(carrier, station = "1") {
   const batches = station === "2" ? activeBatches2 : activeBatches;
   const batch = batches[carrier];
   if (!batch) { alert(`Lỗi: Không tìm thấy xe cho [${carrier}]. Vui lòng tải lại trang.`); return; }
   if (!confirm(`Bạn có chắc chắn muốn CHỐT xe [${batch.id}] của [${carrier}] không?`)) return;
 
   const fromDate = batch.createdDate || todayStr();
+  // Đảm bảo đủ dữ liệu từ Firebase trước khi đếm — tránh thiếu đơn từ máy khác
+  await ensureDatesInCache(fromDate, todayStr());
   const realCount = Object.values(scanDataCache)
     .filter(day => day.date >= fromDate && day.date <= todayStr())
     .flatMap(day => day.orders || [])
@@ -759,20 +795,16 @@ window.closeBatch = function(carrier, station = "1") {
     localStorage.setItem(CLOSED_BATCH_KEY_2, JSON.stringify(closedBatches2));
     delete activeBatches2[carrier];
     localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY_2, JSON.stringify(activeBatches2));
-    setTimeout(() => {
-      push(ref(db, CLOSED_BATCH_KEY_2), closedEntry).catch(err => console.error("Lỗi sync closed2:", err));
-      set(ref(db, `${ACTIVE_BATCH_KEY_2}/${carrier}`), null).catch(err => console.error("Lỗi xóa active2:", err));
-    }, 0);
+    push(ref(db, CLOSED_BATCH_KEY_2), closedEntry).catch(err => console.error("Lỗi sync closed2:", err));
+    set(ref(db, `${ACTIVE_BATCH_KEY_2}/${carrier}`), null).catch(err => console.error("Lỗi xóa active2:", err));
   } else {
     closedBatches = closedBatches.filter(b => !(b.id === batch.id && b.carrier === carrier));
     closedBatches.push(closedEntry);
     localStorage.setItem(CLOSED_BATCH_KEY, JSON.stringify(closedBatches));
     delete activeBatches[carrier];
     localStorage.setItem(ACTIVE_BATCH_LOCAL_KEY, JSON.stringify(activeBatches));
-    setTimeout(() => {
-      push(ref(db, CLOSED_BATCH_KEY), closedEntry).catch(err => console.error("Lỗi sync closed:", err));
-      set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
-    }, 0);
+    push(ref(db, CLOSED_BATCH_KEY), closedEntry).catch(err => console.error("Lỗi sync closed:", err));
+    set(ref(db, `${ACTIVE_BATCH_KEY}/${carrier}`), null).catch(err => console.error("Lỗi xóa active:", err));
   }
 
   renderBatches(station);
@@ -798,9 +830,9 @@ function renderClosedBatches(dateStr) {
   [...batchesForDate].reverse().forEach(b => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" class="batch-checkbox" data-id="${b.id}" data-carrier="${b.carrier}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
-      <td><strong>${b.carrier}</strong></td>
-      <td style="color:blue;font-weight:bold;">${b.id}</td>
+      <td><input type="checkbox" class="batch-checkbox" data-id="${escHtml(b.id)}" data-carrier="${escHtml(b.carrier)}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
+      <td><strong>${escHtml(b.carrier)}</strong></td>
+      <td style="color:blue;font-weight:bold;">${escHtml(b.id)}</td>
       <td style="font-size:16px;font-weight:bold;color:#10b981;">${b.count} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
       <td style="white-space:nowrap;"></td>
     `;
@@ -854,7 +886,7 @@ function renderHistoryTable(orders, title, groupByCode = false) {
       tr.className = statusClass[o.status];
     }
     const stationLabel = o.station === "2" ? " <span style='font-size:11px;color:#7c3aed;font-weight:bold;'>(Quét 2)</span>" : " <span style='font-size:11px;color:#2563eb;font-weight:bold;'>(Quét 1)</span>";
-    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${o.code}</td><td>${o.carrier}</td><td>${o.batchId || '-'}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
+    tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${escHtml(o.code)}</td><td>${escHtml(o.carrier)}</td><td>${escHtml(o.batchId || '-')}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
     historyDetailBody.appendChild(tr);
   });
 }
@@ -882,7 +914,7 @@ function renderChart(orders) {
 function firebaseDayToLocal(fbDay, date) {
   if (!fbDay) return null;
   const raw = fbDay.orders || {};
-  const rawOrders = (Array.isArray(raw) ? raw : Object.values(raw)).filter(Boolean);
+  const rawOrders = (Array.isArray(raw) ? raw : Object.values(raw)).filter(o => o && o.code && o.time);
   const seen = new Set();
   const orders = rawOrders.filter(o => {
     const key = `${o.code}|${o.time}`;
@@ -894,9 +926,11 @@ function firebaseDayToLocal(fbDay, date) {
 }
 
 function saveAllData(date, dayData, newOrder) {
-  idbSaveDay(dayData);
-  if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date);
-  push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder);
+  // Debounce IDB 1 giây — tránh ghi lại 10k đơn mỗi lần quét cuối ngày
+  clearTimeout(idbSaveTimer);
+  idbSaveTimer = setTimeout(() => idbSaveDay(dayData).catch(e => console.error("IDB save error:", e)), 1000);
+  if (dayData.orders.length === 1) set(ref(db, `${FIREBASE_SCAN_KEY}/${date}/date`), date).catch(() => {});
+  push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), newOrder).catch(e => console.error("Firebase push error:", e));
 }
 
 async function idbSearchOrders(terms) {
@@ -967,7 +1001,7 @@ function getOrdersByFilter(filter) {
   let selectedDates = filter.mode === "range" && filter.fromDate && filter.toDate
     ? dates.filter(d => d >= filter.fromDate && d <= filter.toDate)
     : dates.filter(d => d === filter.singleDate);
-  let orders = selectedDates.flatMap(d => scanDataCache[d].orders || []);
+  let orders = selectedDates.flatMap(d => scanDataCache[d]?.orders || []);
   const from = parseTimeInput(filter.fromTime);
   const to = parseTimeInput(filter.toTime);
   if (from !== null || to !== null) {
@@ -983,10 +1017,11 @@ function getOrdersByFilter(filter) {
 }
 
 function detectCarrier(code) {
-  if (code.startsWith("8")) return "J&T";
-  if (code.startsWith("SPX")) return "Shopee Express";
-  if (code.startsWith("G")) return "GHN";
-  if (code.startsWith("VTP")) return "Viettel Post";
+  const upper = code.toUpperCase();
+  if (upper.startsWith("8")) return "J&T";
+  if (upper.startsWith("SPX")) return "Shopee Express";
+  if (upper.startsWith("G")) return "GHN";
+  if (upper.startsWith("VTP")) return "Viettel Post";
   return "Khac";
 }
 
@@ -1016,7 +1051,7 @@ function groupByCarrier(orders) {
 
 
 function getCancelledSet() { return new Set(JSON.parse(localStorage.getItem(CANCELED_KEY)) || []); }
-function saveCancelledSet(list) { const unique = [...new Set(list)]; localStorage.setItem(CANCELED_KEY, JSON.stringify(unique)); set(ref(db, CANCELED_KEY), unique); }
+function saveCancelledSet(list) { const unique = [...new Set(list)]; localStorage.setItem(CANCELED_KEY, JSON.stringify(unique)); set(ref(db, CANCELED_KEY), unique).catch(err => console.error("Lỗi lưu đơn hủy:", err)); }
 function loadCancelledToTextarea() { cancelledInput.value = [...getCancelledSet()].join("\n"); loadCancelledCount(); }
 function loadCancelledCount() { cancelledCount.textContent = getCancelledSet().size; }
 function normalizeCodes(text) { return text.split(/\r?\n/).map(x => x.trim()).filter(Boolean); }
@@ -1159,6 +1194,7 @@ function subscribeToTodayScan() {
 function scheduleMidnightReset() {
   const now = new Date();
   const nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0, 0);
+  // +3 giây buffer để đơn quét lúc 23:59:59 kịp được ghi trước khi reset
   setTimeout(() => {
     subscribeToTodayScan();
     const newDay = todayStr();
@@ -1167,7 +1203,7 @@ function scheduleMidnightReset() {
     showAllTodayOrders = false;
     showAllTodayOrders2 = false;
     scheduleMidnightReset();
-  }, nextMidnight - now);
+  }, nextMidnight - now + 3000);
 }
 
 // === SYNC OFFLINE DATA LÊN FIREBASE ===
@@ -1180,7 +1216,7 @@ async function syncLocalToFirebase() {
 
   const dates = Object.keys(scanDataCache)
     .filter(d => d < todayStr() && (scanDataCache[d]?.orders?.length || 0) > 0)
-    .sort().reverse().slice(0, 2);
+    .sort().reverse().slice(0, Date.now() - lastSyncTs > 24 * 60 * 60 * 1000 ? 7 : 2);
   if (dates.length === 0) return;
 
   try {
@@ -1196,7 +1232,6 @@ async function syncLocalToFirebase() {
       if (missing.length > 0) {
         missing.forEach(o => push(ref(db, `${FIREBASE_SCAN_KEY}/${date}/orders`), o)
           .catch(e => console.error(`Lỗi sync ${date}:`, e)));
-        console.log(`[Sync] ${date}: push ${missing.length} đơn còn thiếu`);
       }
     });
   } catch (e) {
@@ -1338,7 +1373,7 @@ function bindCancelScanEvents() {
   document.getElementById("stopCameraBtn")?.addEventListener("click", stopCameraScanner);
   document.getElementById("saveCancelReturnBtn")?.addEventListener("click", saveCancelReturn);
   document.getElementById("cancelReturnDatePicker")?.addEventListener("change", (e) => {
-    loadAndRenderCancelReturns(e.target.value);
+    loadAndRenderCancelReturns(e.target.value).catch(err => console.error("Lỗi load cancel returns:", err));
   });
 }
 
@@ -1624,7 +1659,7 @@ window.exportBatchPDF = function(batchId, carrier, dateStr, createdDate) {
   overlay.innerHTML = `
     <div style="background:white;padding:24px;border-radius:12px;width:420px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
       <h3 style="margin:0 0 4px;font-size:16px;">📄 Xuất Biên Bản Bàn Giao</h3>
-      <p style="margin:0 0 14px;font-size:13px;color:#888;">Xe: <b>${batchId}</b> &bull; ${carrier} &bull; ${dateStr} &bull; <b>${orders.length} đơn</b></p>
+      <p style="margin:0 0 14px;font-size:13px;color:#888;">Xe: <b>${escHtml(batchId)}</b> &bull; ${escHtml(carrier)} &bull; ${dateStr} &bull; <b>${orders.length} đơn</b></p>
       <label style="font-size:12px;font-weight:bold;color:#555;display:block;margin-bottom:3px;">Tên Shop *</label>
       <input id="pdf-shop" type="text" value="${saved.shop || ""}" placeholder="Tên shop của bạn..."
         style="width:100%;padding:8px 10px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;font-size:14px;margin-bottom:10px;">
@@ -1654,6 +1689,10 @@ window.exportBatchPDF = function(batchId, carrier, dateStr, createdDate) {
   };
 };
 
+function escHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
 function printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders) {
   const now = new Date().toLocaleString("vi-VN");
   const sysId = `#${Math.floor(100000 + Math.random() * 900000)}`;
@@ -1664,15 +1703,15 @@ function printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders) {
     rows += "<tr>";
     for (let g = 0; g < COLS; g++) {
       const o = orders[i + g];
-      if (o) rows += `<td class="stt">${i+g+1}</td><td class="code">${o.code}</td>`;
+      if (o) rows += `<td class="stt">${i+g+1}</td><td class="code">${escHtml(o.code)}</td>`;
       else    rows += `<td></td><td></td>`;
     }
     rows += "</tr>";
   }
-  const addrLine  = addr  ? `<div class="info-addr">Địa chỉ: ${addr}</div>` : "";
-  const phoneLine = phone ? `<div class="info-addr">Điện thoại: ${phone}</div>` : "";
+  const addrLine  = addr  ? `<div class="info-addr">Địa chỉ: ${escHtml(addr)}</div>` : "";
+  const phoneLine = phone ? `<div class="info-addr">Điện thoại: ${escHtml(phone)}</div>` : "";
   const html = `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8">
-<title>Biên Bản - ${batchId}</title>
+<title>Biên Bản - ${escHtml(batchId)}</title>
 <style>
   @page{size:A4;margin:8mm}
   *{margin:0;padding:0;box-sizing:border-box}
@@ -1706,10 +1745,10 @@ function printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders) {
 <div class="subtitle">In vào: ${now} &bull; ID: ${sysId}</div>
 <hr>
 <table class="info"><tr>
-  <td class="l"><div class="lbl">ĐƠN VỊ GỬI HÀNG</div><div class="val">${shop}</div>${addrLine}${phoneLine}</td>
+  <td class="l"><div class="lbl">ĐƠN VỊ GỬI HÀNG</div><div class="val">${escHtml(shop)}</div>${addrLine}${phoneLine}</td>
   <td class="r"><div class="lbl">ĐƠN VỊ TIẾP NHẬN</div>
-    <div class="val">ĐVVC: ${carrier}</div>
-    <div class="val">Lô/Xe: ${batchId}</div>
+    <div class="val">ĐVVC: ${escHtml(carrier)}</div>
+    <div class="val">Lô/Xe: ${escHtml(batchId)}</div>
     <div class="val">Ngày: ${dateStr}</div>
     <div class="badge">TỔNG SỐ: ${total} ĐƠN HÀNG</div></td>
 </tr></table>

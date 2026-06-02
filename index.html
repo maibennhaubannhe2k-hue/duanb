@@ -234,7 +234,10 @@ G12345678"></textarea>
         <div class="history-controls card" style="display: flex; gap: 15px; margin-bottom: 20px; background: #fff0ed; padding: 15px; border-radius: 12px;">
           <div style="flex: 1;">
               <label style="font-weight: bold; color: #ee4d2d;">📅 Chọn ngày xem:</label>
-              <input id="historyDatePicker" type="date" style="margin-top: 5px;">
+              <div style="display:flex;gap:6px;margin-top:5px;">
+                <input id="historyDatePicker" type="date" style="flex:1;">
+                <button id="historyDateLoadBtn" style="background:#ee4d2d;color:white;border:none;border-radius:6px;padding:6px 14px;font-weight:bold;cursor:pointer;white-space:nowrap;">📂 Xem</button>
+              </div>
           </div>
           <div style="flex: 2;">
               <label style="font-weight: bold; color: #ee4d2d;">🔍 Tìm mã vận đơn:</label>
