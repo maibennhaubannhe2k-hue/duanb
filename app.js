@@ -53,6 +53,7 @@ let html5QrScannerMain = null;
 let lastScanCamCode = "";
 let lastScanCamTime = 0;
 let cancelReturnCache = {};
+let cancelReturnCacheLoaded = false; // đã fetch 30 ngày chưa, tránh fetch lại
 let scanMsgTimer = null;
 let idbSaveTimer = null;
 let scanRenderTimer = null;
@@ -1374,6 +1375,79 @@ function bindCancelScanEvents() {
   document.getElementById("saveCancelReturnBtn")?.addEventListener("click", saveCancelReturn);
   document.getElementById("cancelReturnDatePicker")?.addEventListener("change", (e) => {
     loadAndRenderCancelReturns(e.target.value).catch(err => console.error("Lỗi load cancel returns:", err));
+  });
+
+  document.getElementById("cancelReturnSearchBtn")?.addEventListener("click", async () => {
+    const raw = document.getElementById("cancelReturnSearchInput")?.value.trim();
+    const resultWrap = document.getElementById("cancelReturnSearchResult");
+    if (!raw || !resultWrap) return;
+
+    const codes = new Set(raw.split(/[\n,\s]+/).map(c => c.trim().toUpperCase()).filter(Boolean));
+    if (codes.size === 0) return;
+
+    resultWrap.style.display = "block";
+    resultWrap.innerHTML = `<p style="color:#64748b;font-size:13px;">⏳ Đang tìm ${codes.size} mã...</p>`;
+
+    // Fetch toàn bộ lịch sử cancel return 1 lần duy nhất trong session
+    if (!cancelReturnCacheLoaded) {
+      resultWrap.innerHTML = `<p style="color:#64748b;font-size:13px;">⏳ Đang tải toàn bộ lịch sử đơn hủy...</p>`;
+      try {
+        const snap = await get(ref(db, CANCEL_RETURN_KEY));
+        if (snap.exists()) {
+          const allData = snap.val();
+          Object.entries(allData).forEach(([date, data]) => {
+            cancelReturnCache[date] = data;
+          });
+        }
+      } catch(e) {}
+      cancelReturnCacheLoaded = true;
+    }
+
+    // Tìm trong toàn bộ cache
+    const found = [];
+    const foundCodes = new Set();
+    Object.entries(cancelReturnCache).forEach(([date, data]) => {
+      (data?.orders || []).forEach(o => {
+        if (codes.has((o.code || "").toUpperCase())) {
+          found.push({ ...o, date });
+          foundCodes.add((o.code || "").toUpperCase());
+        }
+      });
+    });
+
+    // Mã không tìm thấy
+    const notFound = [...codes].filter(c => !foundCodes.has(c));
+
+    // Render kết quả
+    let html = `<p style="font-weight:bold;margin:0 0 8px;color:#1e293b;">Kết quả: ${found.length} tìm thấy / ${notFound.length} không thấy</p>`;
+    if (found.length > 0) {
+      html += `<table style="font-size:13px;width:100%;border-collapse:collapse;margin-bottom:10px;">
+        <thead><tr style="background:#fef2f2;">
+          <th style="padding:6px 8px;text-align:left;">Mã đơn</th>
+          <th style="padding:6px 8px;">Ngày</th>
+          <th style="padding:6px 8px;">Lô/Xe</th>
+          <th style="padding:6px 8px;">DVVC</th>
+          <th style="padding:6px 8px;">STT biên bản</th>
+        </tr></thead><tbody>`;
+      found.forEach(o => {
+        const sttText = o.found === false ? '❌ Không tìm thấy' : `${o.stt} / ${o.total}`;
+        html += `<tr style="border-bottom:1px solid #fee2e2;">
+          <td style="padding:6px 8px;font-weight:bold;">${escHtml(o.code)}</td>
+          <td style="padding:6px 8px;text-align:center;">${o.date || '-'}</td>
+          <td style="padding:6px 8px;text-align:center;color:#2563eb;font-weight:bold;">${escHtml(o.batchId || '-')}</td>
+          <td style="padding:6px 8px;text-align:center;">${escHtml(o.carrier || '-')}</td>
+          <td style="padding:6px 8px;text-align:center;color:#dc2626;font-weight:bold;">${escHtml(String(sttText))}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+    if (notFound.length > 0) {
+      html += `<div style="background:#fef9c3;border-radius:6px;padding:8px 12px;font-size:13px;">
+        <b>❌ Không tìm thấy trong 30 ngày gần nhất:</b><br>
+        <span style="color:#92400e;">${notFound.map(c => escHtml(c)).join(', ')}</span>
+      </div>`;
+    }
+    resultWrap.innerHTML = html;
   });
 }
 

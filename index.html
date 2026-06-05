@@ -335,6 +335,16 @@ G12345678"></textarea>
         <hr style="margin:24px 0;border-color:#fecaca;">
 
         <h2 style="color:#ef4444;margin-top:0;">📋 Lịch Sử Đơn Hủy Trả Về</h2>
+
+        <div style="background:#fff5f5;border:1px solid #fecaca;border-radius:8px;padding:12px;margin-bottom:16px;">
+          <label style="font-weight:bold;color:#ef4444;display:block;margin-bottom:8px;">🔍 Tìm mã vận đơn hủy:</label>
+          <div style="display:flex;gap:8px;align-items:flex-start;">
+            <textarea id="cancelReturnSearchInput" placeholder="Dán nhiều mã vận đơn, mỗi mã một dòng hoặc cách nhau bằng dấu phẩy..." style="flex:1;padding:8px;font-size:14px;border:1px solid #fca5a5;border-radius:6px;resize:vertical;min-height:72px;font-family:inherit;"></textarea>
+            <button id="cancelReturnSearchBtn" style="background:#ef4444;color:white;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;white-space:nowrap;">🔍 Tìm</button>
+          </div>
+          <div id="cancelReturnSearchResult" style="display:none;margin-top:12px;overflow-x:auto;"></div>
+        </div>
+
         <div style="margin-bottom:12px;">
           <label style="font-weight:bold;color:#ef4444;">📅 Chọn ngày xem:</label>
           <input id="cancelReturnDatePicker" type="date" style="margin-left:8px;padding:8px;font-size:15px;">
@@ -373,6 +383,6 @@ G12345678"></textarea>
     <div id="loadingText" style="color:#94a3b8;font-size:14px;margin-top:6px;">Khởi động...</div>
   </div>
 
-  <script type="module" src="app.js?v=50"></script>
+  <script type="module" src="app.js?v=61"></script>
 </body>
 </html>
