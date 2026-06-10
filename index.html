@@ -210,6 +210,103 @@
           <tbody id="carrierTableBody"></tbody>
         </table>
       </section>
+
+      <!-- Đo sản lượng ca làm -->
+      <section class="card" style="border-top:5px solid #8b5cf6;margin-top:16px;">
+        <h2 style="color:#8b5cf6;margin-top:0;">⏱️ Đo Sản Lượng Ca Làm</h2>
+
+        <div id="prodSetup">
+          <button id="prodStartBtn" style="background:#8b5cf6;color:white;padding:12px 28px;border:none;border-radius:8px;font-size:16px;font-weight:bold;cursor:pointer;">▶️ Bắt Đầu Ca</button>
+        </div>
+
+        <div id="prodForm" style="display:none;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px;">
+            <div>
+              <label style="font-size:13px;font-weight:bold;color:#555;display:block;margin-bottom:4px;">Giờ bắt đầu</label>
+              <input type="text" id="sessionStartTime" placeholder="08:00" maxlength="5" style="width:100%;padding:9px;font-size:15px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:bold;color:#555;display:block;margin-bottom:4px;">Giờ kết thúc</label>
+              <input type="text" id="sessionEndTime" placeholder="12:00" maxlength="5" style="width:100%;padding:9px;font-size:15px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:bold;color:#555;display:block;margin-bottom:4px;">NV chính thức</label>
+              <input type="number" id="sessionFullTime" placeholder="0" min="0" style="width:100%;padding:9px;font-size:15px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;">
+            </div>
+            <div>
+              <label style="font-size:13px;font-weight:bold;color:#555;display:block;margin-bottom:4px;">NV thời vụ</label>
+              <input type="number" id="sessionPartTime" placeholder="0" min="0" style="width:100%;padding:9px;font-size:15px;border:1.5px solid #ddd;border-radius:6px;box-sizing:border-box;">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button id="prodConfirmBtn" style="background:#8b5cf6;color:white;padding:10px 20px;border:none;border-radius:6px;font-size:15px;font-weight:bold;cursor:pointer;">✅ Bắt Đầu Đếm</button>
+            <button id="prodCancelFormBtn" style="background:#64748b;color:white;padding:10px 16px;border:none;border-radius:6px;font-size:14px;cursor:pointer;">✕ Hủy</button>
+          </div>
+        </div>
+
+        <div id="prodLive" style="display:none;">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:14px;">
+            <div style="background:#f5f3ff;border-radius:8px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#7c3aed;font-weight:bold;">THỜI GIAN CHẠY</div>
+              <div id="liveElapsed" style="font-size:22px;font-weight:bold;color:#7c3aed;">0h 0m</div>
+            </div>
+            <div style="background:#f0fdf4;border-radius:8px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#16a34a;font-weight:bold;">ĐƠN TRONG CA</div>
+              <div id="liveOrders" style="font-size:22px;font-weight:bold;color:#16a34a;">0</div>
+            </div>
+            <div style="background:#eff6ff;border-radius:8px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#2563eb;font-weight:bold;">TỔNG NHÂN VIÊN</div>
+              <div id="liveStaff" style="font-size:22px;font-weight:bold;color:#2563eb;">0</div>
+              <div id="liveStaffDetail" style="font-size:11px;color:#94a3b8;"></div>
+            </div>
+            <div style="background:#fff7ed;border-radius:8px;padding:12px;text-align:center;">
+              <div style="font-size:11px;color:#ea580c;font-weight:bold;">TB ĐƠN / NGƯỜI</div>
+              <div id="liveAvg" style="font-size:28px;font-weight:bold;color:#ea580c;">0</div>
+            </div>
+          </div>
+          <button id="prodEndBtn" style="background:#ef4444;color:white;padding:10px 22px;border:none;border-radius:6px;font-size:15px;font-weight:bold;cursor:pointer;">⏹ Kết Thúc Ca</button>
+          <button id="prodEditBtn" style="background:#f59e0b;color:white;padding:10px 18px;border:none;border-radius:6px;font-size:15px;font-weight:bold;cursor:pointer;margin-left:8px;">✏️ Sửa</button>
+        </div>
+
+        <div id="prodSummary" style="display:none;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:16px;margin-top:8px;">
+          <h3 style="margin:0 0 12px;color:#15803d;">📊 Kết Quả Ca Làm</h3>
+          <div id="prodSummaryContent"></div>
+          <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap;">
+            <button id="prodSaveBtn" style="background:#10b981;color:white;padding:10px 22px;border:none;border-radius:6px;font-size:15px;font-weight:bold;cursor:pointer;">💾 Lưu Báo Cáo</button>
+            <button id="prodCancelSummaryBtn" style="background:#64748b;color:white;padding:10px 16px;border:none;border-radius:6px;font-size:14px;cursor:pointer;">↩ Tiếp tục ca</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Danh sách báo cáo sản lượng -->
+      <section class="card" style="border-left:5px solid #8b5cf6;margin-top:16px;">
+        <h2 style="color:#8b5cf6;margin-top:0;">📋 Danh Sách Báo Cáo Sản Lượng</h2>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;">
+          <input type="date" id="reportDatePicker" style="padding:8px 10px;font-size:14px;border:1.5px solid #ddd;border-radius:6px;">
+          <button id="loadReportsBtn" style="background:#8b5cf6;color:white;padding:8px 18px;border:none;border-radius:6px;font-size:14px;font-weight:bold;cursor:pointer;">📂 Xem</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="font-size:14px;">
+            <thead>
+              <tr style="background:#f5f3ff;">
+                <th>Ngày</th>
+                <th>Bắt đầu</th>
+                <th>Kết thúc</th>
+                <th>NV CT</th>
+                <th>NV TV</th>
+                <th>Tổng NV</th>
+                <th>Đơn ca</th>
+                <th>TB đơn/người</th>
+                <th>Thời gian</th>
+              </tr>
+            </thead>
+            <tbody id="reportsBody">
+              <tr><td colspan="9" style="text-align:center;color:#94a3b8;">Chọn ngày để xem báo cáo</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
     </section>
 
     <section id="cancelledPage" class="app-page">
@@ -383,6 +480,6 @@ G12345678"></textarea>
     <div id="loadingText" style="color:#94a3b8;font-size:14px;margin-top:6px;">Khởi động...</div>
   </div>
 
-  <script type="module" src="app.js?v=61"></script>
+  <script type="module" src="app.js?v=65"></script>
 </body>
 </html>

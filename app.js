@@ -22,6 +22,7 @@ const ACTIVE_BATCH_KEY = "warehouse_active_batches_v2";
 const ACTIVE_BATCH_LOCAL_KEY = "warehouse_active_batches_local";
 const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1";
 const CANCEL_RETURN_KEY = "warehouse_cancel_return_v1";
+const PRODUCTIVITY_KEY = "warehouse_productivity_v1";
 const ACTIVE_BATCH_KEY_2 = "warehouse_active_batches_s2_v1";
 const ACTIVE_BATCH_LOCAL_KEY_2 = "warehouse_active_batches_s2_local";
 const CLOSED_BATCH_KEY_2 = "warehouse_closed_batches_s2_v1";
@@ -53,7 +54,9 @@ let html5QrScannerMain = null;
 let lastScanCamCode = "";
 let lastScanCamTime = 0;
 let cancelReturnCache = {};
-let cancelReturnCacheLoaded = false; // đã fetch 30 ngày chưa, tránh fetch lại
+let cancelReturnCacheLoaded = false;
+let productivitySession = null; // { startTime, fullTime, partTime, sessionDate }
+let productivityLiveTimer = null;
 let scanMsgTimer = null;
 let idbSaveTimer = null;
 let scanRenderTimer = null;
@@ -194,6 +197,9 @@ async function init() {
   bindEvents();
   switchPage("scanPage");
 
+  // Khôi phục session ca làm nếu có
+  try { const s = localStorage.getItem("warehouse_active_session"); if (s) productivitySession = JSON.parse(s); } catch(e) {}
+
   // Khóa input scan cho đến khi load xong — tránh quét trùng do data chưa sẵn sàng
   const orderInput2El = document.getElementById("orderInput2");
   if (orderInput) orderInput.disabled = true;
@@ -266,18 +272,20 @@ async function init() {
   setProgress(95, "Kết nối realtime...");
   subscribeToTodayScan();
   syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
+  window.addEventListener("online", syncLocalToFirebase); // Sync ngay khi có mạng lại
 
-  onValue(ref(db, `${CANCEL_RETURN_KEY}/${todayStr()}`), (snapshot) => {
-    if (snapshot.exists()) cancelReturnCache[todayStr()] = snapshot.val();
-  });
-
-  onValue(ref(db, CANCELED_KEY), (snapshot) => {
-    const data = snapshot.val();
-    if (data) {
-      localStorage.setItem(CANCELED_KEY, JSON.stringify(data));
-      loadCancelledToTextarea();
-    }
-  });
+  // Tải danh sách đơn hủy 1 lần/giờ — không cần real-time listener
+  const canceledFetchKey = "lastCanceledFetch";
+  const lastCanceledFetch = parseInt(sessionStorage.getItem(canceledFetchKey) || "0");
+  if (Date.now() - lastCanceledFetch > 60 * 60 * 1000) {
+    get(ref(db, CANCELED_KEY)).then(snapshot => {
+      if (snapshot.exists()) {
+        localStorage.setItem(CANCELED_KEY, JSON.stringify(snapshot.val()));
+        loadCancelledToTextarea();
+      }
+      sessionStorage.setItem(canceledFetchKey, String(Date.now()));
+    }).catch(() => {});
+  }
 
   // Closed batches: onChildAdded chỉ nhận entry mới, không tải lại cả mảng
   onChildAdded(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
@@ -584,6 +592,7 @@ function bindEvents() {
 
 
   bindCancelScanEvents();
+  bindProductivityEvents();
 }
 
 // === 6. QUÉT MÃ ===
@@ -1034,7 +1043,7 @@ function switchPage(pageId) {
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
   if (pageId === "scanPage") focusOrderInput();
   if (pageId === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
-  if (pageId === "dashboardPage") renderAll();
+  if (pageId === "dashboardPage") { renderAll(); renderProductivitySection(); }
   if (pageId === "cancelScanPage") setTimeout(() => document.getElementById("cancelScanInput")?.focus(), 0);
 }
 
@@ -1211,13 +1220,15 @@ function scheduleMidnightReset() {
 // So sánh IDB local vs Firebase, ngày nào local nhiều hơn thì đẩy lên
 // Throttle 30 phút, persist qua localStorage để không reset khi reload trang
 async function syncLocalToFirebase() {
-  if (Date.now() - lastSyncTs < 30 * 60 * 1000) return;
-  lastSyncTs = Date.now();
-  localStorage.setItem("warehouse_last_sync_ts", lastSyncTs);
+  const now = Date.now();
+  if (now - lastSyncTs < 30 * 60 * 1000) return;
+  const prevSyncTs = lastSyncTs;
+  lastSyncTs = now;
+  localStorage.setItem("warehouse_last_sync_ts", String(lastSyncTs));
 
   const dates = Object.keys(scanDataCache)
     .filter(d => d < todayStr() && (scanDataCache[d]?.orders?.length || 0) > 0)
-    .sort().reverse().slice(0, Date.now() - lastSyncTs > 24 * 60 * 60 * 1000 ? 7 : 2);
+    .sort().reverse().slice(0, now - prevSyncTs > 24 * 60 * 60 * 1000 ? 7 : 2);
   if (dates.length === 0) return;
 
   try {
@@ -1765,6 +1776,254 @@ window.exportBatchPDF = function(batchId, carrier, dateStr, createdDate) {
 
 function escHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// === ĐO SẢN LƯỢNG CA LÀM ===
+function renderProductivitySection() {
+  const setup = document.getElementById("prodSetup");
+  const form = document.getElementById("prodForm");
+  const live = document.getElementById("prodLive");
+  const summary = document.getElementById("prodSummary");
+  if (!setup) return;
+  clearInterval(productivityLiveTimer);
+  productivityLiveTimer = null;
+  if (!productivitySession) {
+    setup.style.display = "block";
+    form.style.display = "none";
+    live.style.display = "none";
+    if (summary) summary.style.display = "none";
+  } else if (productivitySession._pending) {
+    setup.style.display = "none";
+    form.style.display = "none";
+    live.style.display = "none";
+    if (summary) summary.style.display = "block";
+  } else {
+    setup.style.display = "none";
+    form.style.display = "none";
+    live.style.display = "block";
+    if (summary) summary.style.display = "none";
+    const { fullTime, partTime } = productivitySession;
+    const staffEl = document.getElementById("liveStaff");
+    const staffDetail = document.getElementById("liveStaffDetail");
+    if (staffEl) staffEl.textContent = fullTime + partTime;
+    if (staffDetail) staffDetail.textContent = `CT: ${fullTime} / TV: ${partTime}`;
+    updateProductivityLive();
+    productivityLiveTimer = setInterval(updateProductivityLive, 10000);
+  }
+}
+
+function updateProductivityLive() {
+  if (!productivitySession) return;
+  const { startTime, plannedEndTime, sessionDate } = productivitySession;
+  const startTs = new Date(startTime).getTime();
+
+  // Tự kết thúc khi đến giờ đã đặt
+  if (plannedEndTime && !productivitySession._pending) {
+    if (Date.now() >= new Date(plannedEndTime).getTime()) {
+      document.getElementById("prodEndBtn")?.click();
+      return;
+    }
+  }
+
+  const elapsed = Date.now() - startTs;
+  const h = Math.floor(elapsed / 3600000);
+  const m = Math.floor((elapsed % 3600000) / 60000);
+  const elapsedEl = document.getElementById("liveElapsed");
+  if (elapsedEl) elapsedEl.textContent = `${h}h ${m}m`;
+  const dayOrders = scanDataCache[sessionDate]?.orders || [];
+  const count = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+  const totalStaff = productivitySession.fullTime + productivitySession.partTime;
+  const avg = totalStaff > 0 ? (count / totalStaff).toFixed(1) : "0";
+  const ordersEl = document.getElementById("liveOrders");
+  const avgEl = document.getElementById("liveAvg");
+  if (ordersEl) ordersEl.textContent = count;
+  if (avgEl) avgEl.textContent = avg;
+}
+
+function bindProductivityEvents() {
+  document.getElementById("prodStartBtn")?.addEventListener("click", () => {
+    document.getElementById("prodSetup").style.display = "none";
+    document.getElementById("prodForm").style.display = "block";
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    document.getElementById("sessionStartTime").value = `${hh}:${mm}`;
+    document.getElementById("sessionEndTime").value = "";
+    document.getElementById("sessionFullTime").value = "";
+    document.getElementById("sessionPartTime").value = "";
+  });
+
+  document.getElementById("prodCancelFormBtn")?.addEventListener("click", () => {
+    document.getElementById("prodForm").style.display = "none";
+    document.getElementById("prodSetup").style.display = "block";
+  });
+
+  document.getElementById("prodConfirmBtn")?.addEventListener("click", () => {
+    const startVal = document.getElementById("sessionStartTime").value.trim();
+    const endVal = document.getElementById("sessionEndTime").value.trim();
+    const fullTime = parseInt(document.getElementById("sessionFullTime").value) || 0;
+    const partTime = parseInt(document.getElementById("sessionPartTime").value) || 0;
+    if (!startVal || !/^\d{1,2}:\d{2}$/.test(startVal)) return alert("Vui lòng nhập giờ bắt đầu đúng định dạng (VD: 08:00)!");
+    if (fullTime + partTime === 0) return alert("Vui lòng nhập số nhân viên!");
+    const today = todayStr();
+    const [sh, sm] = startVal.split(":").map(Number);
+    const startTime = new Date(`${today}T${String(sh).padStart(2,"0")}:${String(sm).padStart(2,"0")}:00`).toISOString();
+    let plannedEndTime = null;
+    if (endVal && /^\d{1,2}:\d{2}$/.test(endVal)) {
+      const [eh, em] = endVal.split(":").map(Number);
+      plannedEndTime = new Date(`${today}T${String(eh).padStart(2,"0")}:${String(em).padStart(2,"0")}:00`).toISOString();
+    }
+    productivitySession = { startTime, plannedEndTime, fullTime, partTime, sessionDate: today };
+    localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+    renderProductivitySection();
+  });
+
+  document.getElementById("prodEndBtn")?.addEventListener("click", () => {
+    if (!productivitySession) return;
+    clearInterval(productivityLiveTimer);
+    productivityLiveTimer = null;
+    const { startTime, plannedEndTime, sessionDate, fullTime, partTime } = productivitySession;
+    const startTs = new Date(startTime).getTime();
+    const endTs = plannedEndTime ? new Date(plannedEndTime).getTime() : Date.now();
+    const dayOrders = scanDataCache[sessionDate]?.orders || [];
+    const totalOrders = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+    const totalStaff = fullTime + partTime;
+    const avgOrders = totalStaff > 0 ? parseFloat((totalOrders / totalStaff).toFixed(1)) : 0;
+    const elapsed = endTs - startTs;
+    const h = Math.floor(elapsed / 3600000);
+    const m = Math.floor((elapsed % 3600000) / 60000);
+    const startLabel = new Date(startTime).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    const endLabel = new Date(endTs).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+
+    const content = document.getElementById("prodSummaryContent");
+    if (content) content.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;">
+        <div style="background:#f5f3ff;border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#7c3aed;font-weight:bold;">THỜI GIAN</div>
+          <div style="font-size:18px;font-weight:bold;color:#7c3aed;">${h}h ${m}m</div>
+          <div style="font-size:11px;color:#94a3b8;">${startLabel} → ${endLabel}</div>
+        </div>
+        <div style="background:#f0fdf4;border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#16a34a;font-weight:bold;">TỔNG ĐƠN</div>
+          <div style="font-size:22px;font-weight:bold;color:#16a34a;">${totalOrders}</div>
+        </div>
+        <div style="background:#eff6ff;border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#2563eb;font-weight:bold;">NHÂN VIÊN</div>
+          <div style="font-size:22px;font-weight:bold;color:#2563eb;">${totalStaff}</div>
+          <div style="font-size:11px;color:#94a3b8;">CT: ${fullTime} / TV: ${partTime}</div>
+        </div>
+        <div style="background:#fff7ed;border-radius:8px;padding:12px;text-align:center;">
+          <div style="font-size:11px;color:#ea580c;font-weight:bold;">TB ĐƠN / NGƯỜI</div>
+          <div style="font-size:28px;font-weight:bold;color:#ea580c;">${avgOrders}</div>
+        </div>
+      </div>`;
+
+    productivitySession._pending = { endTime: new Date(endTs).toISOString(), totalOrders, avgOrders, elapsed };
+    localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+    document.getElementById("prodLive").style.display = "none";
+    document.getElementById("prodSummary").style.display = "block";
+  });
+
+  document.getElementById("prodEditBtn")?.addEventListener("click", () => {
+    if (!productivitySession) return;
+    clearInterval(productivityLiveTimer);
+    productivityLiveTimer = null;
+    const { startTime, plannedEndTime, fullTime, partTime } = productivitySession;
+    const sd = new Date(startTime);
+    document.getElementById("sessionStartTime").value =
+      `${String(sd.getHours()).padStart(2,"0")}:${String(sd.getMinutes()).padStart(2,"0")}`;
+    if (plannedEndTime) {
+      const ed = new Date(plannedEndTime);
+      document.getElementById("sessionEndTime").value =
+        `${String(ed.getHours()).padStart(2,"0")}:${String(ed.getMinutes()).padStart(2,"0")}`;
+    } else {
+      document.getElementById("sessionEndTime").value = "";
+    }
+    document.getElementById("sessionFullTime").value = fullTime;
+    document.getElementById("sessionPartTime").value = partTime;
+    document.getElementById("prodLive").style.display = "none";
+    document.getElementById("prodForm").style.display = "block";
+  });
+
+  document.getElementById("prodCancelSummaryBtn")?.addEventListener("click", () => {
+    delete productivitySession._pending;
+    localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+    renderProductivitySection();
+  });
+
+  document.getElementById("prodSaveBtn")?.addEventListener("click", async () => {
+    if (!productivitySession?._pending) return;
+    const { startTime, sessionDate, fullTime, partTime, _pending } = productivitySession;
+    const report = {
+      date: sessionDate,
+      startTime,
+      endTime: _pending.endTime,
+      fullTime,
+      partTime,
+      totalStaff: fullTime + partTime,
+      totalOrders: _pending.totalOrders,
+      avgOrders: _pending.avgOrders,
+      elapsed: _pending.elapsed,
+      savedAt: new Date().toISOString()
+    };
+    const btn = document.getElementById("prodSaveBtn");
+    if (btn) { btn.disabled = true; btn.textContent = "⏳ Đang lưu..."; }
+    try {
+      await push(ref(db, `${PRODUCTIVITY_KEY}/${sessionDate}`), report);
+      localStorage.removeItem("warehouse_active_session");
+      productivitySession = null;
+      document.getElementById("prodSummary").style.display = "none";
+      document.getElementById("prodSetup").style.display = "block";
+      const picker = document.getElementById("reportDatePicker");
+      if (picker) { picker.value = sessionDate; loadProductivityReports(sessionDate); }
+      alert("✅ Đã lưu báo cáo sản lượng!");
+    } catch(e) {
+      alert("❌ Lỗi lưu báo cáo, vui lòng thử lại!");
+      if (btn) { btn.disabled = false; btn.textContent = "💾 Lưu Báo Cáo"; }
+    }
+  });
+
+  document.getElementById("loadReportsBtn")?.addEventListener("click", () => {
+    const date = document.getElementById("reportDatePicker")?.value;
+    if (!date) return alert("Vui lòng chọn ngày!");
+    loadProductivityReports(date);
+  });
+}
+
+async function loadProductivityReports(date) {
+  const body = document.getElementById("reportsBody");
+  if (!body) return;
+  body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#94a3b8;">⏳ Đang tải...</td></tr>`;
+  try {
+    const snap = await get(ref(db, `${PRODUCTIVITY_KEY}/${date}`));
+    if (!snap.exists()) {
+      body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#94a3b8;">Không có báo cáo ngày ${date}</td></tr>`;
+      return;
+    }
+    const reports = Object.values(snap.val()).sort((a, b) => (a.startTime > b.startTime ? 1 : -1));
+    body.innerHTML = "";
+    reports.forEach(r => {
+      const startLabel = new Date(r.startTime).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+      const endLabel = new Date(r.endTime).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+      const el = r.elapsed ?? (new Date(r.endTime) - new Date(r.startTime));
+      const h = Math.floor(el / 3600000);
+      const m = Math.floor((el % 3600000) / 60000);
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${r.date}</td>
+        <td style="text-align:center;">${startLabel}</td>
+        <td style="text-align:center;">${endLabel}</td>
+        <td style="text-align:center;">${r.fullTime}</td>
+        <td style="text-align:center;">${r.partTime}</td>
+        <td style="text-align:center;font-weight:bold;">${r.totalStaff}</td>
+        <td style="text-align:center;color:#16a34a;font-weight:bold;">${r.totalOrders}</td>
+        <td style="text-align:center;color:#ea580c;font-weight:bold;font-size:16px;">${r.avgOrders}</td>
+        <td style="text-align:center;">${h}h ${m}m</td>`;
+      body.appendChild(tr);
+    });
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#ef4444;">Lỗi tải báo cáo</td></tr>`;
+  }
 }
 
 function printBienBan(shop, addr, phone, batchId, carrier, dateStr, orders) {
