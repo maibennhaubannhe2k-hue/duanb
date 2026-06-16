@@ -197,8 +197,20 @@ async function init() {
   bindEvents();
   switchPage("scanPage");
 
-  // Khôi phục session ca làm nếu có
+  // Khôi phục session ca làm nếu có (local trước, Firebase fallback cho máy khác)
   try { const s = localStorage.getItem("warehouse_active_session"); if (s) productivitySession = JSON.parse(s); } catch(e) {}
+  if (productivitySession) {
+    // Có session local → sync lên Firebase để máy khác thấy
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
+  } else {
+    try {
+      const snap = await get(ref(db, `${PRODUCTIVITY_KEY}/currentSession`));
+      if (snap.exists()) {
+        productivitySession = snap.val();
+        localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+      }
+    } catch(e) {}
+  }
 
   // Khóa input scan cho đến khi load xong — tránh quét trùng do data chưa sẵn sàng
   const orderInput2El = document.getElementById("orderInput2");
@@ -1817,10 +1829,12 @@ function updateProductivityLive() {
   const { startTime, plannedEndTime, sessionDate } = productivitySession;
   const startTs = new Date(startTime).getTime();
 
-  // Tự kết thúc khi đến giờ đã đặt
+  // Tự kết thúc và tự lưu khi đến giờ đã đặt
   if (plannedEndTime && !productivitySession._pending) {
     if (Date.now() >= new Date(plannedEndTime).getTime()) {
-      document.getElementById("prodEndBtn")?.click();
+      clearInterval(productivityLiveTimer);
+      productivityLiveTimer = null;
+      autoEndAndSaveProductivity();
       return;
     }
   }
@@ -1875,6 +1889,7 @@ function bindProductivityEvents() {
     }
     productivitySession = { startTime, plannedEndTime, fullTime, partTime, sessionDate: today };
     localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
     renderProductivitySection();
   });
 
@@ -1948,6 +1963,7 @@ function bindProductivityEvents() {
   document.getElementById("prodCancelSummaryBtn")?.addEventListener("click", () => {
     delete productivitySession._pending;
     localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
     renderProductivitySection();
   });
 
@@ -1970,6 +1986,7 @@ function bindProductivityEvents() {
     if (btn) { btn.disabled = true; btn.textContent = "⏳ Đang lưu..."; }
     try {
       await push(ref(db, `${PRODUCTIVITY_KEY}/${sessionDate}`), report);
+      await set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), null);
       localStorage.removeItem("warehouse_active_session");
       productivitySession = null;
       document.getElementById("prodSummary").style.display = "none";
@@ -1988,6 +2005,41 @@ function bindProductivityEvents() {
     if (!date) return alert("Vui lòng chọn ngày!");
     loadProductivityReports(date);
   });
+}
+
+async function autoEndAndSaveProductivity() {
+  if (!productivitySession) return;
+  const { startTime, plannedEndTime, sessionDate, fullTime, partTime } = productivitySession;
+  const startTs = new Date(startTime).getTime();
+  const endTs = new Date(plannedEndTime).getTime();
+  const dayOrders = scanDataCache[sessionDate]?.orders || [];
+  const totalOrders = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+  const totalStaff = fullTime + partTime;
+  const avgOrders = totalStaff > 0 ? parseFloat((totalOrders / totalStaff).toFixed(1)) : 0;
+  const elapsed = endTs - startTs;
+  const report = {
+    date: sessionDate,
+    startTime,
+    endTime: new Date(endTs).toISOString(),
+    fullTime,
+    partTime,
+    totalStaff,
+    totalOrders,
+    avgOrders,
+    elapsed,
+    savedAt: new Date().toISOString()
+  };
+  try {
+    await push(ref(db, `${PRODUCTIVITY_KEY}/${sessionDate}`), report);
+    await set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), null);
+    localStorage.removeItem("warehouse_active_session");
+    productivitySession = null;
+    renderProductivitySection();
+    const picker = document.getElementById("reportDatePicker");
+    if (picker) { picker.value = sessionDate; loadProductivityReports(sessionDate); }
+  } catch(e) {
+    console.error("Lỗi tự lưu:", e);
+  }
 }
 
 async function loadProductivityReports(date) {

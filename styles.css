@@ -241,6 +241,11 @@ tr.row-error { background: #fef2f2; }
   100% { top: 20%; }
 }
 
+@keyframes marqueeScroll {
+  0%   { transform: translateX(100vw); }
+  100% { transform: translateX(-100%); }
+}
+
 @media (max-width: 920px) {
   .scan-layout { grid-template-columns: 1fr; } /* Gom về 1 cột trên điện thoại */
   h1 { font-size: 28px; }
