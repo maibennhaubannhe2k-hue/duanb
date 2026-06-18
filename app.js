@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, push, onValue, onChildAdded, onChildRemoved, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onChildAdded, onChildRemoved, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -23,6 +23,7 @@ const ACTIVE_BATCH_LOCAL_KEY = "warehouse_active_batches_local";
 const CLOSED_BATCH_KEY = "warehouse_closed_batches_v1";
 const CANCEL_RETURN_KEY = "warehouse_cancel_return_v1";
 const PRODUCTIVITY_KEY = "warehouse_productivity_v1";
+const HANDOVER_KEY = "warehouse_handover_v1";
 const ACTIVE_BATCH_KEY_2 = "warehouse_active_batches_s2_v1";
 const ACTIVE_BATCH_LOCAL_KEY_2 = "warehouse_active_batches_s2_local";
 const CLOSED_BATCH_KEY_2 = "warehouse_closed_batches_s2_v1";
@@ -56,6 +57,8 @@ let lastScanCamTime = 0;
 let cancelReturnCache = {};
 let cancelReturnCacheLoaded = false;
 let productivitySession = null; // { startTime, fullTime, partTime, sessionDate }
+let handoverCache = {};
+let closedBatchCarrierFilter = "all";
 let productivityLiveTimer = null;
 let scanMsgTimer = null;
 let idbSaveTimer = null;
@@ -199,15 +202,20 @@ async function init() {
 
   // Khôi phục session ca làm nếu có (local trước, Firebase fallback cho máy khác)
   try { const s = localStorage.getItem("warehouse_active_session"); if (s) productivitySession = JSON.parse(s); } catch(e) {}
-  if (productivitySession) {
-    // Có session local → sync lên Firebase để máy khác thấy
-    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
+  if (productivitySession && productivitySession.owner) {
+    // Chỉ owner mới sync lên Firebase — tránh máy khác ghi đè session của owner
+    const { owner: _o0, _pending: _p0, ...sessionForFb0 } = productivitySession;
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), sessionForFb0).catch(() => {});
   } else {
+    // Không phải owner hoặc chưa có session → lấy từ Firebase (luôn mới nhất)
     try {
       const snap = await get(ref(db, `${PRODUCTIVITY_KEY}/currentSession`));
       if (snap.exists()) {
         productivitySession = snap.val();
         localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
+      } else {
+        productivitySession = null;
+        localStorage.removeItem("warehouse_active_session");
       }
     } catch(e) {}
   }
@@ -532,6 +540,17 @@ function bindEvents() {
     if (e.key === "Enter") loadHistoryDate(historyDatePicker.value);
   });
 
+  document.getElementById("handoverDateLoadBtn")?.addEventListener("click", () => {
+    const date = document.getElementById("handoverDatePicker")?.value;
+    if (date) loadHandoverHistory(date);
+  });
+  document.getElementById("handoverDatePicker")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const date = document.getElementById("handoverDatePicker").value;
+      if (date) loadHandoverHistory(date);
+    }
+  });
+
   const doHistorySearch = async () => {
     const raw = historySearchInput?.value.trim();
     if (!raw) {
@@ -655,6 +674,23 @@ function handleScan(code, station = "1") {
     const batchInfo = duplicateOriginal.batchId ? ` — Lô: ${duplicateOriginal.batchId}` : "";
     showMessage(`⚠️ TRÙNG ĐƠN — Đã quét lúc ${formatTime(duplicateOriginal.time)} (${daysText})${batchInfo}`, "warning", station);
     playTone("warning");
+    // Khóa input và bắt xác nhận trước khi quét tiếp
+    const inputEl = station === "2" ? document.getElementById("orderInput2") : orderInput;
+    if (inputEl) { inputEl.disabled = true; inputEl.value = ""; }
+    const modal = document.getElementById("dupConfirmModal");
+    if (modal) {
+      const detail = document.getElementById("dupConfirmDetail");
+      if (detail) {
+        const batchText = duplicateOriginal.batchId ? `\nLô/Xe: ${duplicateOriginal.batchId}` : "";
+        detail.textContent = `Mã: ${code}\nĐã quét lúc: ${formatTime(duplicateOriginal.time)} (${daysText})${batchText}`;
+        detail.style.whiteSpace = "pre-line";
+      }
+      modal.style.display = "flex";
+      document.getElementById("dupConfirmBtn").onclick = () => {
+        modal.style.display = "none";
+        if (inputEl) { inputEl.disabled = false; inputEl.focus(); }
+      };
+    }
   } else {
     status = STATUS.SUCCESS;
     showMessage(`✅ THÀNH CÔNG: ${code}`, "success", station);
@@ -835,12 +871,40 @@ window.closeBatch = async function(carrier, station = "1") {
   focusOrderInput();
 }
 
-function renderClosedBatches(dateStr) {
+async function renderClosedBatches(dateStr) {
   const body = document.getElementById("closedBatchesBody");
   const downloadBtn = document.getElementById("downloadSelectedBatchesBtn");
   const selectAll = document.getElementById("selectAllBatches");
   if (!body) return;
-  const batchesForDate = [...closedBatches, ...closedBatches2].filter(b => b.date === dateStr);
+
+  // Load trạng thái bàn giao từ Firebase — đọc hôm nay + hôm qua vì bàn giao thường trong 2 ngày
+  try {
+    const today = todayStr();
+    const yesterday = localDateStr(new Date(Date.now() - 86400000));
+    const [s1, s2] = await Promise.all([
+      get(ref(db, `${HANDOVER_KEY}/${today}`)),
+      get(ref(db, `${HANDOVER_KEY}/${yesterday}`))
+    ]);
+    handoverCache = { ...(s1.exists() ? s1.val() : {}), ...(s2.exists() ? s2.val() : {}) };
+  } catch(e) { handoverCache = {}; }
+
+  // Bind filter buttons
+  document.querySelectorAll(".dvvc-filter-btn").forEach(btn => {
+    btn.onclick = () => {
+      closedBatchCarrierFilter = btn.dataset.dvvc;
+      document.querySelectorAll(".dvvc-filter-btn").forEach(b => {
+        const active = b.dataset.dvvc === closedBatchCarrierFilter;
+        b.style.background = active ? "#10b981" : "#fff";
+        b.style.color = active ? "#fff" : "#374151";
+        b.style.borderColor = active ? "#10b981" : "#94a3b8";
+      });
+      renderClosedBatches(dateStr);
+    };
+  });
+
+  let batchesForDate = [...closedBatches, ...closedBatches2].filter(b => b.date === dateStr);
+  if (closedBatchCarrierFilter !== "all") batchesForDate = batchesForDate.filter(b => b.carrier === closedBatchCarrierFilter);
+
   body.innerHTML = "";
   if (downloadBtn) downloadBtn.style.display = "none";
   if (selectAll) selectAll.checked = false;
@@ -850,6 +914,7 @@ function renderClosedBatches(dateStr) {
   }
   if (downloadBtn) downloadBtn.style.display = "inline-block";
   [...batchesForDate].reverse().forEach(b => {
+    const handover = Object.values(handoverCache).find(h => h.batchId === b.id && h.carrier === b.carrier);
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><input type="checkbox" class="batch-checkbox" data-id="${escHtml(b.id)}" data-carrier="${escHtml(b.carrier)}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
@@ -865,10 +930,38 @@ function renderClosedBatches(dateStr) {
     dlBtn.onclick = () => downloadBatch(b.id, b.carrier, b.date, b.createdDate || b.date);
     const pdfBtn = document.createElement("button");
     pdfBtn.textContent = "📄 Biên Bản";
-    pdfBtn.style.cssText = "background:#7c3aed;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;";
+    pdfBtn.style.cssText = "background:#7c3aed;color:white;padding:6px 12px;border:none;border-radius:4px;cursor:pointer;margin-right:6px;";
     pdfBtn.onclick = () => exportBatchPDF(b.id, b.carrier, b.date, b.createdDate || b.date);
+
+    // Nút Đã Bàn Giao
+    const bgBtn = document.createElement("button");
+    if (handover) {
+      const d = new Date(handover.time);
+      const label = `✅ BG lúc ${d.toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit"})} ${d.toLocaleDateString("vi-VN")}`;
+      bgBtn.textContent = label;
+      bgBtn.style.cssText = "background:#dcfce7;color:#15803d;padding:6px 12px;border:1.5px solid #86efac;border-radius:4px;cursor:default;font-weight:600;";
+      bgBtn.disabled = true;
+    } else {
+      bgBtn.textContent = "🤝 Đã Bàn Giao";
+      bgBtn.style.cssText = "background:#f0fdf4;color:#16a34a;padding:6px 12px;border:1.5px solid #86efac;border-radius:4px;cursor:pointer;font-weight:600;";
+      bgBtn.onclick = async () => {
+        if (!confirm(`Xác nhận bàn giao lô ${b.id} (${b.carrier})?`)) return;
+        const handoverDate = todayStr();
+        const record = { batchId: b.id, carrier: b.carrier, closedDate: dateStr, time: new Date().toISOString() };
+        try {
+          await push(ref(db, `${HANDOVER_KEY}/${handoverDate}`), record);
+          handoverCache[record.time] = record;
+          const d = new Date(record.time);
+          bgBtn.textContent = `✅ BG lúc ${d.toLocaleTimeString("vi-VN",{hour:"2-digit",minute:"2-digit"})} ${d.toLocaleDateString("vi-VN")}`;
+          bgBtn.style.cssText = "background:#dcfce7;color:#15803d;padding:6px 12px;border:1.5px solid #86efac;border-radius:4px;cursor:default;font-weight:600;";
+          bgBtn.disabled = true;
+        } catch(e) { alert("Lỗi lưu bàn giao, thử lại!"); }
+      };
+    }
+
     actionTd.appendChild(dlBtn);
     actionTd.appendChild(pdfBtn);
+    actionTd.appendChild(bgBtn);
     body.appendChild(tr);
   });
 }
@@ -887,21 +980,35 @@ window.downloadBatch = async function(batchId, carrier, dateStr, createdDate) {
   }
 }
 
+const HISTORY_PAGE_SIZE = 100;
+let historySortedOrders = [];
+let historyGroupByCode = false;
+let historyShownCount = 0;
+
 function renderHistoryTable(orders, title, groupByCode = false) {
   historyDetailBody.innerHTML = "";
   historyTitle.innerHTML = `${title} <br> <span style="color:#ee4d2d;font-size:20px;font-weight:bold;">📊 TỔNG CỘNG: ${orders.length} ĐƠN</span>`;
 
-  const sorted = groupByCode
+  historySortedOrders = groupByCode
     ? [...orders].sort((a, b) => a.code.localeCompare(b.code))
     : [...orders].reverse();
+  historyGroupByCode = groupByCode;
+  historyShownCount = 0;
+  appendHistoryRows();
+}
 
+function appendHistoryRows() {
   const palette = ["#fde68a","#bbf7d0","#bfdbfe","#fecaca","#ddd6fe","#fed7aa","#a7f3d0","#fda4af","#e9d5ff","#99f6e4"];
   const codeColorMap = {};
   let colorIdx = 0;
 
-  sorted.forEach(o => {
+  // Remove existing load-more button if any
+  document.getElementById("historyLoadMoreBtn")?.remove();
+
+  const slice = historySortedOrders.slice(historyShownCount, historyShownCount + HISTORY_PAGE_SIZE);
+  slice.forEach(o => {
     const tr = document.createElement("tr");
-    if (groupByCode) {
+    if (historyGroupByCode) {
       if (!(o.code in codeColorMap)) codeColorMap[o.code] = palette[colorIdx++ % palette.length];
       tr.style.background = codeColorMap[o.code];
     } else {
@@ -911,6 +1018,19 @@ function renderHistoryTable(orders, title, groupByCode = false) {
     tr.innerHTML = `<td>${formatTime(o.time)}</td><td>${escHtml(o.code)}</td><td>${escHtml(o.carrier)}</td><td>${escHtml(o.batchId || '-')}${stationLabel}</td><td>${statusLabel[o.status]}</td>`;
     historyDetailBody.appendChild(tr);
   });
+  historyShownCount += slice.length;
+
+  const remaining = historySortedOrders.length - historyShownCount;
+  if (remaining > 0) {
+    const btn = document.createElement("tr");
+    btn.id = "historyLoadMoreBtn";
+    btn.innerHTML = `<td colspan="5" style="text-align:center;padding:12px;">
+      <button style="background:#ee4d2d;color:white;border:none;border-radius:6px;padding:8px 24px;font-size:14px;font-weight:bold;cursor:pointer;">
+        Xem thêm ${Math.min(remaining, HISTORY_PAGE_SIZE)} đơn (còn ${remaining})
+      </button></td>`;
+    btn.querySelector("button").onclick = appendHistoryRows;
+    historyDetailBody.appendChild(btn);
+  }
 }
 
 function renderChart(orders) {
@@ -1175,7 +1295,6 @@ function renderCarrierTable(orders) {
 }
 
 let unsubscribeTodayScan = null;
-let isBatchPushing = false;
 
 function subscribeToTodayScan() {
   if (unsubscribeTodayScan) unsubscribeTodayScan();
@@ -1839,13 +1958,15 @@ function updateProductivityLive() {
     }
   }
 
-  const elapsed = Date.now() - startTs;
+  const nowTs = Date.now();
+  const upperTs = plannedEndTime ? Math.min(new Date(plannedEndTime).getTime(), nowTs) : nowTs;
+  const elapsed = upperTs - startTs;
   const h = Math.floor(elapsed / 3600000);
   const m = Math.floor((elapsed % 3600000) / 60000);
   const elapsedEl = document.getElementById("liveElapsed");
   if (elapsedEl) elapsedEl.textContent = `${h}h ${m}m`;
   const dayOrders = scanDataCache[sessionDate]?.orders || [];
-  const count = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+  const count = dayOrders.filter(o => { const t = new Date(o.time).getTime(); return o.status === STATUS.SUCCESS && t >= startTs && t <= upperTs; }).length;
   const totalStaff = productivitySession.fullTime + productivitySession.partTime;
   const avg = totalStaff > 0 ? (count / totalStaff).toFixed(1) : "0";
   const ordersEl = document.getElementById("liveOrders");
@@ -1869,7 +1990,13 @@ function bindProductivityEvents() {
 
   document.getElementById("prodCancelFormBtn")?.addEventListener("click", () => {
     document.getElementById("prodForm").style.display = "none";
-    document.getElementById("prodSetup").style.display = "block";
+    if (productivitySession) {
+      document.getElementById("prodLive").style.display = "block";
+      updateProductivityLive();
+      productivityLiveTimer = setInterval(updateProductivityLive, 10000);
+    } else {
+      document.getElementById("prodSetup").style.display = "block";
+    }
   });
 
   document.getElementById("prodConfirmBtn")?.addEventListener("click", () => {
@@ -1887,9 +2014,11 @@ function bindProductivityEvents() {
       const [eh, em] = endVal.split(":").map(Number);
       plannedEndTime = new Date(`${today}T${String(eh).padStart(2,"0")}:${String(em).padStart(2,"0")}:00`).toISOString();
     }
-    productivitySession = { startTime, plannedEndTime, fullTime, partTime, sessionDate: today };
+    const wasOwner = !productivitySession || productivitySession.owner === true;
+    productivitySession = { startTime, plannedEndTime, fullTime, partTime, sessionDate: today, owner: wasOwner };
     localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
-    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
+    const { owner: _o1, ...sessionForFb1 } = productivitySession;
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), sessionForFb1).catch(() => {});
     renderProductivitySection();
   });
 
@@ -1901,7 +2030,7 @@ function bindProductivityEvents() {
     const startTs = new Date(startTime).getTime();
     const endTs = plannedEndTime ? new Date(plannedEndTime).getTime() : Date.now();
     const dayOrders = scanDataCache[sessionDate]?.orders || [];
-    const totalOrders = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+    const totalOrders = dayOrders.filter(o => { const t = new Date(o.time).getTime(); return o.status === STATUS.SUCCESS && t >= startTs && t <= endTs; }).length;
     const totalStaff = fullTime + partTime;
     const avgOrders = totalStaff > 0 ? parseFloat((totalOrders / totalStaff).toFixed(1)) : 0;
     const elapsed = endTs - startTs;
@@ -1963,12 +2092,14 @@ function bindProductivityEvents() {
   document.getElementById("prodCancelSummaryBtn")?.addEventListener("click", () => {
     delete productivitySession._pending;
     localStorage.setItem("warehouse_active_session", JSON.stringify(productivitySession));
-    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), productivitySession).catch(() => {});
+    const { owner: _o2, _pending: _p2, ...sessionForFb2 } = productivitySession;
+    set(ref(db, `${PRODUCTIVITY_KEY}/currentSession`), sessionForFb2).catch(() => {});
     renderProductivitySection();
   });
 
   document.getElementById("prodSaveBtn")?.addEventListener("click", async () => {
     if (!productivitySession?._pending) return;
+    if (!productivitySession.owner) return;
     const { startTime, sessionDate, fullTime, partTime, _pending } = productivitySession;
     const report = {
       date: sessionDate,
@@ -2009,11 +2140,18 @@ function bindProductivityEvents() {
 
 async function autoEndAndSaveProductivity() {
   if (!productivitySession) return;
+  if (!productivitySession.owner) {
+    // Máy này chỉ xem — xóa session local, không lưu
+    productivitySession = null;
+    localStorage.removeItem("warehouse_active_session");
+    renderProductivitySection();
+    return;
+  }
   const { startTime, plannedEndTime, sessionDate, fullTime, partTime } = productivitySession;
   const startTs = new Date(startTime).getTime();
   const endTs = new Date(plannedEndTime).getTime();
   const dayOrders = scanDataCache[sessionDate]?.orders || [];
-  const totalOrders = dayOrders.filter(o => o.status === STATUS.SUCCESS && new Date(o.time).getTime() >= startTs).length;
+  const totalOrders = dayOrders.filter(o => { const t = new Date(o.time).getTime(); return o.status === STATUS.SUCCESS && t >= startTs && t <= endTs; }).length;
   const totalStaff = fullTime + partTime;
   const avgOrders = totalStaff > 0 ? parseFloat((totalOrders / totalStaff).toFixed(1)) : 0;
   const elapsed = endTs - startTs;
@@ -2075,6 +2213,107 @@ async function loadProductivityReports(date) {
     });
   } catch(e) {
     body.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#ef4444;">Lỗi tải báo cáo</td></tr>`;
+  }
+}
+
+let handoverCarrierFilter = "all";
+let handoverRecordsCache = []; // lưu để filter không cần fetch lại
+
+async function loadHandoverHistory(date) {
+  const body = document.getElementById("handoverHistoryBody");
+  if (!body) return;
+  body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;">⏳ Đang tải...</td></tr>`;
+
+  // Bind filter buttons
+  document.querySelectorAll(".ho-filter-btn").forEach(btn => {
+    btn.onclick = () => {
+      handoverCarrierFilter = btn.dataset.dvvc;
+      document.querySelectorAll(".ho-filter-btn").forEach(b => {
+        const active = b.dataset.dvvc === handoverCarrierFilter;
+        b.style.background = active ? "#d97706" : "#fff";
+        b.style.color = active ? "#fff" : "#374151";
+        b.style.borderColor = active ? "#d97706" : "#94a3b8";
+      });
+      renderHandoverRows();
+    };
+  });
+
+  try {
+    const datesToFetch = [date];
+    for (let i = 1; i <= 7; i++) {
+      datesToFetch.push(localDateStr(new Date(new Date(date).getTime() - i * 86400000)));
+    }
+    const snaps = await Promise.all(datesToFetch.map(d => get(ref(db, `${HANDOVER_KEY}/${d}`))));
+    handoverRecordsCache = snaps
+      .flatMap(s => s.exists() ? Object.values(s.val()) : [])
+      .filter(r => localDateStr(new Date(r.time)) === date)
+      .sort((a, b) => a.time > b.time ? 1 : -1);
+    renderHandoverRows();
+  } catch(e) {
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#ef4444;">Lỗi tải dữ liệu</td></tr>`;
+  }
+}
+
+function renderHandoverRows() {
+  const body = document.getElementById("handoverHistoryBody");
+  const dlAllBtn = document.getElementById("downloadSelectedHandoverBtn");
+  const selectAll = document.getElementById("selectAllHandover");
+  if (!body) return;
+
+  let records = handoverRecordsCache;
+  if (handoverCarrierFilter !== "all") records = records.filter(r => r.carrier === handoverCarrierFilter);
+
+  if (records.length === 0) {
+    body.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#94a3b8;">Không có bàn giao nào</td></tr>`;
+    if (dlAllBtn) dlAllBtn.style.display = "none";
+    if (selectAll) selectAll.checked = false;
+    return;
+  }
+  if (dlAllBtn) dlAllBtn.style.display = "inline-block";
+
+  body.innerHTML = "";
+  records.forEach(r => {
+    const batch = [...closedBatches, ...closedBatches2].find(b => b.id === r.batchId && b.carrier === r.carrier);
+    const count = batch ? batch.count : "—";
+    const closedDate = r.closedDate || r.date || (batch ? batch.date : "—");
+    const createdDate = batch?.createdDate || closedDate;
+    const timeLabel = new Date(r.time).toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit", day: "2-digit", month: "2-digit", year: "numeric" });
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" class="ho-checkbox" data-id="${escHtml(r.batchId)}" data-carrier="${escHtml(r.carrier)}" data-closeddate="${closedDate}" data-createddate="${createdDate}"></td>
+      <td><strong>${escHtml(r.carrier)}</strong></td>
+      <td style="color:#2563eb;font-weight:bold;">${escHtml(r.batchId)}</td>
+      <td style="color:#10b981;font-weight:bold;">${count}</td>
+      <td>${closedDate}</td>
+      <td style="color:#d97706;font-weight:600;">${timeLabel}</td>
+      <td></td>
+    `;
+    const dlBtn = document.createElement("button");
+    dlBtn.textContent = "📥 Tải về";
+    dlBtn.style.cssText = "background:#3b82f6;color:white;padding:5px 12px;border:none;border-radius:4px;cursor:pointer;font-size:13px;";
+    dlBtn.onclick = () => downloadBatch(r.batchId, r.carrier, closedDate, createdDate);
+    tr.lastElementChild.appendChild(dlBtn);
+    body.appendChild(tr);
+  });
+
+  // Select all checkbox
+  if (selectAll) {
+    selectAll.onchange = () => {
+      document.querySelectorAll(".ho-checkbox").forEach(cb => cb.checked = selectAll.checked);
+    };
+  }
+
+  // Bulk download button
+  if (dlAllBtn) {
+    dlAllBtn.onclick = async () => {
+      const checked = [...document.querySelectorAll(".ho-checkbox:checked")];
+      if (checked.length === 0) return alert("Chưa chọn xe nào!");
+      dlAllBtn.disabled = true; dlAllBtn.textContent = "⏳ Đang tải...";
+      for (const cb of checked) {
+        await downloadBatch(cb.dataset.id, cb.dataset.carrier, cb.dataset.closeddate, cb.dataset.createddate);
+      }
+      dlAllBtn.disabled = false; dlAllBtn.textContent = "📥 Tải các xe đã chọn";
+    };
   }
 }
 

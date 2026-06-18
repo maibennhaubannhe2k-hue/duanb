@@ -26,8 +26,8 @@
 
     <section id="scanPage" class="app-page active">
 
-      <div style="background:#fef2f2;border:1.5px solid #fca5a5;border-radius:8px;padding:10px 0;margin-bottom:10px;overflow:hidden;white-space:nowrap;">
-        <div style="display:inline-block;animation:marqueeScroll 28s linear infinite;font-size:14px;font-weight:700;color:#b91c1c;">
+      <div style="background:#fef2f2;border:2px solid #fca5a5;border-radius:8px;padding:14px 0;margin-bottom:10px;overflow:hidden;white-space:nowrap;">
+        <div style="display:inline-block;animation:marqueeScroll 28s linear infinite;font-size:18px;font-weight:700;color:#b91c1c;">
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
           &#9888; Tất cả các đơn đều phải quét 100%
           &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;|&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
@@ -360,6 +360,14 @@ G12345678"></textarea>
         <section class="card batch-history-card" style="margin-bottom: 20px; border-left: 5px solid #10b981;">
           <h2 style="color: #10b981; margin-top: 0;">📦 Lịch Sử Xe Đã Chốt</h2>
           <p class="muted" style="margin-top: -10px;">Chọn ngày ở Lịch phía trên để xem và tải các xe đã chốt.</p>
+          <div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span style="font-size:13px;color:#64748b;font-weight:600;">Lọc DVVC:</span>
+            <button class="dvvc-filter-btn active" data-dvvc="all" style="padding:4px 12px;border-radius:20px;border:1.5px solid #10b981;background:#10b981;color:#fff;cursor:pointer;font-size:13px;">Tất cả</button>
+            <button class="dvvc-filter-btn" data-dvvc="J&T" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">J&T</button>
+            <button class="dvvc-filter-btn" data-dvvc="Shopee Express" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">Shopee Express</button>
+            <button class="dvvc-filter-btn" data-dvvc="GHN" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">GHN</button>
+            <button class="dvvc-filter-btn" data-dvvc="Viettel Post" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">Viettel Post</button>
+          </div>
           <div style="margin-bottom: 10px;">
             <button id="downloadSelectedBatchesBtn" style="background:#10b981;display:none;">📥 Tải các xe đã chọn</button>
           </div>
@@ -375,6 +383,42 @@ G12345678"></textarea>
             </thead>
             <tbody id="closedBatchesBody">
               <tr><td colspan="5" style="text-align:center;">Vui lòng chọn ngày để xem lịch sử xe</td></tr>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="card batch-history-card" style="margin-bottom:20px;border-left:5px solid #f59e0b;">
+          <h2 style="color:#d97706;margin-top:0;">🤝 Lịch Sử Bàn Giao</h2>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap;">
+            <label style="font-weight:600;color:#d97706;white-space:nowrap;">📅 Chọn ngày bàn giao:</label>
+            <input id="handoverDatePicker" type="date" style="max-width:200px;">
+            <button id="handoverDateLoadBtn" style="background:#d97706;color:white;border:none;border-radius:6px;padding:6px 16px;font-weight:bold;cursor:pointer;">📋 Xem</button>
+          </div>
+          <div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <span style="font-size:13px;color:#64748b;font-weight:600;">Lọc DVVC:</span>
+            <button class="ho-filter-btn active" data-dvvc="all" style="padding:4px 12px;border-radius:20px;border:1.5px solid #d97706;background:#d97706;color:#fff;cursor:pointer;font-size:13px;">Tất cả</button>
+            <button class="ho-filter-btn" data-dvvc="J&T" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">J&T</button>
+            <button class="ho-filter-btn" data-dvvc="Shopee Express" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">Shopee Express</button>
+            <button class="ho-filter-btn" data-dvvc="GHN" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">GHN</button>
+            <button class="ho-filter-btn" data-dvvc="Viettel Post" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">Viettel Post</button>
+          </div>
+          <div style="margin-bottom:10px;">
+            <button id="downloadSelectedHandoverBtn" style="background:#d97706;color:white;border:none;border-radius:6px;padding:7px 16px;font-weight:bold;cursor:pointer;display:none;">📥 Tải các xe đã chọn</button>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style="width:36px;"><input type="checkbox" id="selectAllHandover"></th>
+                <th>DVVC</th>
+                <th>Lô/Xe</th>
+                <th>Số đơn</th>
+                <th>Ngày chốt</th>
+                <th>Thời gian bàn giao</th>
+                <th>Tải về</th>
+              </tr>
+            </thead>
+            <tbody id="handoverHistoryBody">
+              <tr><td colspan="7" style="text-align:center;color:#94a3b8;">Chọn ngày để xem lịch sử bàn giao</td></tr>
             </tbody>
           </table>
         </section>
@@ -483,6 +527,17 @@ G12345678"></textarea>
     </section>
   </main>
 
+  <!-- Modal xác nhận đơn trùng -->
+  <div id="dupConfirmModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:10000;align-items:center;justify-content:center;">
+    <div style="background:#fff;border-radius:14px;padding:32px 28px;max-width:340px;width:90%;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.3);">
+      <div style="font-size:48px;margin-bottom:10px;">⚠️</div>
+      <div style="font-size:20px;font-weight:bold;color:#b45309;margin-bottom:8px;">PHÁT HIỆN ĐƠN TRÙNG</div>
+      <div id="dupConfirmDetail" style="font-size:13px;color:#92400e;background:#fef3c7;border-radius:8px;padding:10px 12px;margin-bottom:14px;line-height:1.6;text-align:left;"></div>
+      <div style="font-size:15px;color:#374151;margin-bottom:24px;line-height:1.5;">Đã kiểm tra và để riêng đơn trùng chưa?</div>
+      <button id="dupConfirmBtn" style="background:#2563eb;color:#fff;border:none;padding:13px 36px;font-size:16px;font-weight:bold;border-radius:8px;cursor:pointer;width:100%;">Đã kiểm tra, tiếp tục quét</button>
+    </div>
+  </div>
+
   <div id="loadingOverlay" style="position:fixed;inset:0;background:rgba(15,23,42,0.93);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;">
     <div style="color:#f1f5f9;font-size:22px;font-weight:bold;margin-bottom:24px;">⏳ Đang tải dữ liệu...</div>
     <div style="width:320px;background:#1e293b;border-radius:10px;overflow:hidden;height:14px;box-shadow:0 0 0 1px #334155;">
@@ -492,6 +547,6 @@ G12345678"></textarea>
     <div id="loadingText" style="color:#94a3b8;font-size:14px;margin-top:6px;">Khởi động...</div>
   </div>
 
-  <script type="module" src="app.js?v=69"></script>
+  <script type="module" src="app.js?v=83"></script>
 </body>
 </html>
