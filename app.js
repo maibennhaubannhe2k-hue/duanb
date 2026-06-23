@@ -1,6 +1,6 @@
 // === 1. KHỞI TẠO FIREBASE ===
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-app.js";
-import { getDatabase, ref, set, push, onChildAdded, onChildRemoved, get, query, orderByChild, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
+import { getDatabase, ref, set, push, onChildAdded, onChildRemoved, get, query, orderByChild, orderByKey, startAfter } from "https://www.gstatic.com/firebasejs/10.10.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCTuFzKXtKcsgKrY_IjjGjXoiiPZRqn2o",
@@ -284,6 +284,30 @@ async function init() {
     } catch(e) {}
   }
 
+  // 4b. Merge hôm qua + hôm kia từ Firebase — tránh IDB stale giữa các trình duyệt
+  for (const i of [1, 2]) {
+    const rd = new Date();
+    rd.setDate(rd.getDate() - i);
+    const rds = localDateStr(rd);
+    const rKey = `lastMerge_${rds}`;
+    if (!sessionStorage.getItem(rKey)) {
+      try {
+        const snap = await get(ref(db, `${FIREBASE_SCAN_KEY}/${rds}`));
+        if (snap.exists()) {
+          const fbDay = firebaseDayToLocal(snap.val(), rds);
+          const localDay = scanDataCache[rds] || { date: rds, orders: [] };
+          const localKeys = new Set(localDay.orders.map(o => `${o.code}|${o.time}`));
+          fbDay.orders.forEach(o => {
+            if (!localKeys.has(`${o.code}|${o.time}`)) localDay.orders.push(o);
+          });
+          scanDataCache[rds] = localDay;
+          idbSaveDay(localDay);
+        }
+        sessionStorage.setItem(rKey, "1");
+      } catch(e) {}
+    }
+  }
+
   setProgress(85, "Hiển thị dữ liệu...");
   renderAll();
   renderBatches("1");
@@ -307,10 +331,15 @@ async function init() {
     }).catch(() => {});
   }
 
-  // Closed batches: onChildAdded chỉ nhận entry mới, không tải lại cả mảng
-  onChildAdded(ref(db, CLOSED_BATCH_KEY), (snapshot) => {
+  // Closed batches: startAfter lastKey để không tải lại toàn bộ lịch sử
+  const cb1LastKey = localStorage.getItem(CLOSED_BATCH_KEY + "_lk");
+  const cb1Query = cb1LastKey
+    ? query(ref(db, CLOSED_BATCH_KEY), orderByKey(), startAfter(cb1LastKey))
+    : ref(db, CLOSED_BATCH_KEY);
+  onChildAdded(cb1Query, (snapshot) => {
     const b = snapshot.val();
     if (!b || !b.id || !b.carrier) return;
+    localStorage.setItem(CLOSED_BATCH_KEY + "_lk", snapshot.key);
     const alreadyLocal = closedBatches.some(x => x.id === b.id && x.carrier === b.carrier);
     if (!alreadyLocal) {
       closedBatches.push(b);
@@ -344,10 +373,15 @@ async function init() {
     }
   });
 
-  // Station 2 - closed batches
-  onChildAdded(ref(db, CLOSED_BATCH_KEY_2), (snapshot) => {
+  // Station 2 - closed batches: startAfter lastKey
+  const cb2LastKey = localStorage.getItem(CLOSED_BATCH_KEY_2 + "_lk");
+  const cb2Query = cb2LastKey
+    ? query(ref(db, CLOSED_BATCH_KEY_2), orderByKey(), startAfter(cb2LastKey))
+    : ref(db, CLOSED_BATCH_KEY_2);
+  onChildAdded(cb2Query, (snapshot) => {
     const b = snapshot.val();
     if (!b || !b.id || !b.carrier) return;
+    localStorage.setItem(CLOSED_BATCH_KEY_2 + "_lk", snapshot.key);
     const alreadyLocal = closedBatches2.some(x => x.id === b.id && x.carrier === b.carrier);
     if (!alreadyLocal) {
       closedBatches2.push(b);
@@ -604,11 +638,14 @@ function bindEvents() {
   });
 
   document.getElementById("exportSelectedDateBtn").onclick = () => {
-    const rows = [];
-    document.querySelectorAll("#historyDetailBody tr").forEach(tr => {
-      const tds = tr.querySelectorAll("td");
-      if (tds.length > 0) rows.push({ "Thời gian": tds[0].innerText, "Mã đơn": tds[1].innerText, "DVVC": tds[2].innerText, "Lô/Xe": tds[3].innerText, "Trạng thái": tds[4].innerText });
-    });
+    if (!historySortedOrders.length) return alert("Không có dữ liệu để xuất!");
+    const rows = historySortedOrders.map(o => ({
+      "Thời gian": formatTime(o.time),
+      "Mã đơn": o.code,
+      "DVVC": o.carrier,
+      "Lô/Xe": o.batchId || "-",
+      "Trạng thái": statusLabel[o.status]
+    }));
     exportOrdersToExcel(rows, "bao_cao_kho_tong.xlsx");
   };
 
