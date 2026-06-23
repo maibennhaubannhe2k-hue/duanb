@@ -2303,15 +2303,25 @@ function renderHandoverRows() {
     };
   }
 
-  // Bulk download button
+  // Bulk download button — gom tất cả vào 1 file (giống lịch sử chốt xe)
   if (dlAllBtn) {
     dlAllBtn.onclick = async () => {
       const checked = [...document.querySelectorAll(".ho-checkbox:checked")];
       if (checked.length === 0) return alert("Chưa chọn xe nào!");
       dlAllBtn.disabled = true; dlAllBtn.textContent = "⏳ Đang tải...";
+      const rows = [];
       for (const cb of checked) {
-        await downloadBatch(cb.dataset.id, cb.dataset.carrier, cb.dataset.closeddate, cb.dataset.createddate);
+        const { id, carrier, closeddate, createddate } = cb.dataset;
+        const fromDate = createddate || closeddate;
+        await ensureDatesInCache(fromDate, closeddate);
+        const orders = Object.values(scanDataCache)
+          .filter(day => day.date >= fromDate && day.date <= closeddate)
+          .flatMap(day => day.orders || [])
+          .filter(o => o.batchId === id && o.carrier === carrier && o.status === STATUS.SUCCESS);
+        orders.forEach(o => rows.push({ "Lô/Xe": o.batchId, "DVVC": o.carrier, "Ngày chốt": closeddate, "Thời gian": formatTime(o.time), "Mã đơn": o.code }));
       }
+      if (rows.length > 0) exportOrdersToExcel(rows, `BanGiao_${todayStr()}.xlsx`);
+      else alert("Không tìm thấy đơn nào cho các xe đã chọn!");
       dlAllBtn.disabled = false; dlAllBtn.textContent = "📥 Tải các xe đã chọn";
     };
   }
