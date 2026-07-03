@@ -7,6 +7,11 @@
   --muted-2: #475569;
   --primary: #2563eb;
   --primary-2: #1d4ed8;
+  --row-success-bg: #f0fdf4;
+  --row-warning-bg: #fde047;
+  --row-error-bg:   #fef2f2;
+  --row-stale-bg:   #fff7ed;
+  --batch-color:    #1d4ed8;
 }
 
 * {
@@ -164,7 +169,13 @@ button.danger {
 .message.success {
   background-color: #f0fdf4; color: #15803d;
   border-color: #86efac; border-left-color: #16a34a;
-  font-size: 34px; padding: 24px;
+  font-size: 72px; padding: 40px 24px;
+  animation: popSuccess 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+@keyframes popSuccess {
+  0%   { transform: scale(0.92); opacity: 0.7; }
+  100% { transform: scale(1);    opacity: 1; }
 }
 
 .message.warning {
@@ -245,6 +256,79 @@ tr.row-error { background: #fef2f2; }
   0%   { transform: translateX(100vw); }
   100% { transform: translateX(-100%); }
 }
+
+/* ===== DARK MODE ===== */
+html.dark {
+  --bg-1: #0f172a;
+  --bg-2: #1e293b;
+  --card: #1e293b;
+  --line: #334155;
+  --text: #f1f5f9;
+  --muted-2: #94a3b8;
+  --row-success-bg: #052e16;
+  --row-warning-bg: #422006;
+  --row-error-bg:   #450a0a;
+  --row-stale-bg:   #1c1003;
+  --batch-color:    #60a5fa;
+}
+
+html.dark body {
+  background:
+    radial-gradient(circle at 0% 0%, #1e3a5f 0%, rgba(30,58,95,0) 45%),
+    radial-gradient(circle at 100% 100%, #14532d 0%, rgba(20,83,45,0) 40%),
+    linear-gradient(180deg, #0f172a, #1e293b);
+}
+
+html.dark .card {
+  background: rgba(30,41,59,0.97);
+  border-color: rgba(71,85,105,0.5);
+}
+
+html.dark input[type="text"],
+html.dark input[type="date"],
+html.dark input[type="number"],
+html.dark textarea,
+html.dark select {
+  background: #0f172a;
+  color: #f1f5f9;
+  border-color: #475569;
+}
+
+html.dark #orderInput { color: #f1f5f9; }
+
+html.dark table { background: #1e293b; }
+html.dark thead tr { background: #0f172a; }
+html.dark tbody tr:hover { background: #334155; }
+html.dark th { color: #cbd5e1; }
+html.dark td { color: #e2e8f0; }
+
+html.dark tr.row-success { background: #052e16; }
+html.dark tr.row-warning { background: #422006; }
+html.dark tr.row-error   { background: #450a0a; }
+
+html.dark .metric {
+  background: linear-gradient(180deg, #1e293b, #0f172a);
+  border-color: #334155;
+}
+html.dark .metric .label { color: #94a3b8; }
+html.dark .metric strong { color: #93c5fd; }
+
+html.dark .message         { background-color: #1e293b; }
+html.dark .message.success { background-color: #052e16; border-color: #166534; border-left-color: #16a34a; }
+html.dark .message.warning { background-color: #422006; border-color: #92400e; border-left-color: #ca8a04; }
+html.dark .message.error   { background-color: #450a0a; border-color: #991b1b; border-left-color: #dc2626; }
+
+html.dark .page-nav { background: rgba(15,23,42,0.95); }
+
+/* Toggle button */
+#themeToggleBtn {
+  position: absolute; right: 16px; top: 50%; transform: translateY(-50%);
+  background: rgba(255,255,255,0.15); border: 1.5px solid rgba(255,255,255,0.3);
+  padding: 7px 13px; font-size: 20px; border-radius: 10px;
+  cursor: pointer; color: #fff; font-weight: bold; box-shadow: none;
+  transition: background 0.2s;
+}
+#themeToggleBtn:hover { background: rgba(255,255,255,0.25); transform: translateY(-50%); }
 
 @media (max-width: 920px) {
   .scan-layout { grid-template-columns: 1fr; } /* Gom về 1 cột trên điện thoại */

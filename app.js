@@ -73,6 +73,18 @@ let closedBatches2 = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY_2)) || [];
 let showAllTodayOrders2 = false;
 
 // DOM Elements
+// Dark mode toggle
+(function() {
+  const btn = document.getElementById("themeToggleBtn");
+  function updateBtn() { if (btn) btn.textContent = document.documentElement.classList.contains("dark") ? "☀️" : "🌙"; }
+  updateBtn();
+  btn?.addEventListener("click", () => {
+    document.documentElement.classList.toggle("dark");
+    localStorage.setItem("theme", document.documentElement.classList.contains("dark") ? "dark" : "light");
+    updateBtn();
+  });
+})();
+
 const orderInput = document.getElementById("orderInput");
 const scanMessage = document.getElementById("scanMessage");
 const cancelledInput = document.getElementById("cancelledInput");
@@ -797,7 +809,7 @@ function renderAll() {
   if (activePage === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
 }
 
-const rowBg = { [STATUS.SUCCESS]: "#f0fdf4", [STATUS.DUPLICATE]: "#fde047", [STATUS.CANCELED]: "#fef2f2" };
+const rowBg = { [STATUS.SUCCESS]: "var(--row-success-bg)", [STATUS.DUPLICATE]: "var(--row-warning-bg)", [STATUS.CANCELED]: "var(--row-error-bg)" };
 
 function renderTodayList(orders, bodyId = "todayScannedBody", loadMoreId = "loadMoreTodayBtn", showAllFlag = false, onShowAll = null) {
   const body = document.getElementById(bodyId);
@@ -840,11 +852,11 @@ function renderBatches(station = "1") {
     const batch = batches[carrier];
     const tr = document.createElement("tr");
     const isStale = batch.createdDate && batch.createdDate < todayStr();
-    if (isStale) tr.style.background = "#fff7ed";
+    if (isStale) tr.style.background = "var(--row-stale-bg)";
     const tdName = document.createElement("td");
     tdName.innerHTML = isStale
       ? `<strong style="color:#dc2626;">${escHtml(batch.id)}</strong><br><span style="font-size:13px;color:#dc2626;">⚠️ ${escHtml(carrier)} — tạo ngày ${batch.createdDate}</span>`
-      : `<strong style="color:blue;">${escHtml(batch.id)}</strong><br><span style="font-size:13px;">${escHtml(carrier)}</span>`;
+      : `<strong style="color:var(--batch-color);">${escHtml(batch.id)}</strong><br><span style="font-size:13px;">${escHtml(carrier)}</span>`;
     const tdCount = document.createElement("td");
     tdCount.style.cssText = "font-size:18px;color:#e11d48;font-weight:bold;";
     const fromDate = batch.createdDate || todayStr();
@@ -956,7 +968,7 @@ async function renderClosedBatches(dateStr) {
     tr.innerHTML = `
       <td><input type="checkbox" class="batch-checkbox" data-id="${escHtml(b.id)}" data-carrier="${escHtml(b.carrier)}" data-date="${b.date}" data-createddate="${b.createdDate || b.date}"></td>
       <td><strong>${escHtml(b.carrier)}</strong></td>
-      <td style="color:blue;font-weight:bold;">${escHtml(b.id)}</td>
+      <td style="color:var(--batch-color);font-weight:bold;">${escHtml(b.id)}</td>
       <td style="font-size:16px;font-weight:bold;color:#10b981;">${b.count} <span style="font-size:12px;color:#64748b;font-weight:normal;">(Khớp Excel)</span></td>
       <td style="white-space:nowrap;"></td>
     `;
@@ -1566,9 +1578,9 @@ function renderCancelScanResults() {
   body.innerHTML = "";
   cancelScanList.forEach((r, i) => {
     const tr = document.createElement("tr");
-    tr.style.background = r.found ? "" : "#fef2f2";
+    tr.style.background = r.found ? "" : "var(--row-error-bg)";
     tr.innerHTML = r.found
-      ? `<td>${i + 1}</td><td><b>${r.code}</b></td><td style="color:blue;font-weight:bold;">${r.batchId}</td><td>${r.carrier}</td><td style="color:#e11d48;font-weight:bold;font-size:16px;">STT ${r.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${r.total} đơn</span></td>`
+      ? `<td>${i + 1}</td><td><b>${r.code}</b></td><td style="color:var(--batch-color);font-weight:bold;">${r.batchId}</td><td>${r.carrier}</td><td style="color:#e11d48;font-weight:bold;font-size:16px;">STT ${r.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${r.total} đơn</span></td>`
       : `<td>${i + 1}</td><td><b>${r.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`;
     body.appendChild(tr);
   });
@@ -1859,11 +1871,11 @@ async function loadAndRenderCancelReturns(date) {
     }
     filtered.forEach((o, i) => {
       const tr = document.createElement("tr");
-      tr.style.background = o.found === false ? "#fef2f2" : "";
+      tr.style.background = o.found === false ? "var(--row-error-bg)" : "";
       const timeStr = o.time ? formatTime(o.time) : "-";
       tr.innerHTML = o.found === false
         ? `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td colspan="3" style="color:#ef4444;">❌ Không tìm thấy trong 10 ngày gần nhất</td>`
-        : `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td style="color:blue;font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
+        : `<td>${i + 1}</td><td>${timeStr}</td><td><b>${o.code}</b></td><td style="color:var(--batch-color);font-weight:bold;">${o.batchId}</td><td>${o.carrier}</td><td style="color:#e11d48;font-weight:bold;">STT ${o.stt} <span style="color:#64748b;font-size:12px;font-weight:normal;">/ ${o.total} đơn</span></td>`;
       body.appendChild(tr);
     });
   }

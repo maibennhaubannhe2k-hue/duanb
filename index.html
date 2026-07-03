@@ -4,14 +4,16 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Quản Lý Quét Đơn Xuất Kho TMDT</title>
-  <link rel="stylesheet" href="styles.css?v=2">
+  <link rel="stylesheet" href="styles.css?v=6">
+  <script>if(localStorage.getItem('theme')==='dark')document.documentElement.classList.add('dark');</script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
-  <header>
+  <header style="position:relative;">
     <h1>Quản Lý Quét Đơn Xuất Kho TMDT</h1>
+    <button id="themeToggleBtn" title="Đổi giao diện sáng/tối">🌙</button>
   </header>
 
   <main class="container">
