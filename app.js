@@ -27,6 +27,18 @@ const HANDOVER_KEY = "warehouse_handover_v1";
 const ACTIVE_BATCH_KEY_2 = "warehouse_active_batches_s2_v1";
 const ACTIVE_BATCH_LOCAL_KEY_2 = "warehouse_active_batches_s2_local";
 const CLOSED_BATCH_KEY_2 = "warehouse_closed_batches_s2_v1";
+const CARRIER_RULES_KEY = "warehouse_carrier_rules_v1";
+const SETTINGS_PASSWORD = "ACBT222";
+const SETTINGS_UNLOCK_SESSION_KEY = "warehouse_settings_unlocked";
+const DUPLICATE_CONFIRM_KEY = "warehouse_duplicate_confirm_v1";
+
+// Quy tắc nhận diện DVVC mặc định — không thể xóa qua UI, chỉ có thể bị đè bởi quy tắc tùy chỉnh cùng độ dài tiền tố
+const DEFAULT_CARRIER_RULES = [
+  { prefix: "SPX", carrier: "Shopee Express" },
+  { prefix: "VTP", carrier: "Viettel Post" },
+  { prefix: "8", carrier: "J&T" },
+  { prefix: "G", carrier: "GHN" },
+];
 
 // IndexedDB — lưu đơn hàng không giới hạn dung lượng
 const IDB_NAME = "warehouse_db";
@@ -54,6 +66,12 @@ let isScanCameraRunning = false;
 let html5QrScannerMain = null;
 let lastScanCamCode = "";
 let lastScanCamTime = 0;
+
+// Camera xác nhận đơn trùng
+let isDupCameraRunning = false;
+let html5QrScannerDup = null;
+let lastDupCamCode = "";
+let lastDupCamTime = 0;
 let cancelReturnCache = {};
 let cancelReturnCacheLoaded = false;
 let productivitySession = null; // { startTime, fullTime, partTime, sessionDate }
@@ -71,6 +89,8 @@ let closedBatches = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY)) || [];
 let activeBatches2 = JSON.parse(localStorage.getItem(ACTIVE_BATCH_LOCAL_KEY_2)) || {};
 let closedBatches2 = JSON.parse(localStorage.getItem(CLOSED_BATCH_KEY_2)) || [];
 let showAllTodayOrders2 = false;
+let customCarrierRules = JSON.parse(localStorage.getItem(CARRIER_RULES_KEY)) || {}; // { "58": "Cago", ... }
+let duplicateConfirmCache = {}; // { date: { code: { code, carrier, batchId, originalTime, confirmedAt } } } — chỉ fetch 1 lần/ngày cần dùng
 
 // DOM Elements
 // Dark mode toggle
@@ -209,6 +229,9 @@ async function init() {
 
   document.getElementById("singleDate").value = todayStr();
   loadCancelledToTextarea();
+  renderCarrierRulesTable();
+  syncCarrierSelectOptions();
+  syncCarrierFilterButtons();
   bindEvents();
   switchPage("scanPage");
 
@@ -330,6 +353,34 @@ async function init() {
   syncLocalToFirebase(); // Đẩy dữ liệu offline cũ lên Firebase (chạy nền)
   window.addEventListener("online", syncLocalToFirebase); // Sync ngay khi có mạng lại
 
+  // Tải quy tắc nhận diện DVVC 1 lần/giờ — config nhỏ, không cần real-time listener
+  const carrierRulesFetchKey = "lastCarrierRulesFetch";
+  const lastCarrierRulesFetch = parseInt(sessionStorage.getItem(carrierRulesFetchKey) || "0");
+  if (Date.now() - lastCarrierRulesFetch > 60 * 60 * 1000) {
+    get(ref(db, CARRIER_RULES_KEY)).then(snapshot => {
+      if (snapshot.exists()) {
+        customCarrierRules = snapshot.val() || {};
+        localStorage.setItem(CARRIER_RULES_KEY, JSON.stringify(customCarrierRules));
+        renderCarrierRulesTable();
+        syncCarrierSelectOptions();
+        syncCarrierFilterButtons();
+      }
+      sessionStorage.setItem(carrierRulesFetchKey, String(Date.now()));
+    }).catch(() => {});
+  }
+
+  // Tải trạng thái xác nhận đơn trùng hôm nay 1 lần/giờ — để hiện đúng số ở badge Quét đơn 1/2
+  const dupConfirmFetchKey = `lastDupConfirmFetch_${todayStr()}`;
+  const lastDupConfirmFetch = parseInt(sessionStorage.getItem(dupConfirmFetchKey) || "0");
+  if (Date.now() - lastDupConfirmFetch > 60 * 60 * 1000) {
+    get(ref(db, `${DUPLICATE_CONFIRM_KEY}/${todayStr()}`)).then(snapshot => {
+      duplicateConfirmCache[todayStr()] = snapshot.exists() ? snapshot.val() : {};
+      updateDupOrderBadges();
+      if (activePage === "dupConfirmPage") renderDuplicateTodayPanel();
+      sessionStorage.setItem(dupConfirmFetchKey, String(Date.now()));
+    }).catch(() => {});
+  }
+
   // Tải danh sách đơn hủy 1 lần/giờ — không cần real-time listener
   const canceledFetchKey = "lastCanceledFetch";
   const lastCanceledFetch = parseInt(sessionStorage.getItem(canceledFetchKey) || "0");
@@ -433,7 +484,10 @@ async function init() {
 // === 5. SỰ KIỆN ===
 function bindEvents() {
   document.querySelectorAll(".page-tab").forEach((tab) => {
-    tab.addEventListener("click", () => switchPage(tab.dataset.page));
+    tab.addEventListener("click", () => {
+      if (tab.dataset.page === "settingsPage" && !unlockSettingsPage()) return;
+      switchPage(tab.dataset.page);
+    });
   });
 
   const createBatchBtn = document.getElementById("createBatchBtn");
@@ -656,11 +710,61 @@ function bindEvents() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && isCameraRunning) stopCameraScanner();
     if (document.hidden && isScanCameraRunning) stopScanPageCamera();
+    if (document.hidden && isDupCameraRunning) stopDupCameraScanner();
   });
 
 
   bindCancelScanEvents();
   bindProductivityEvents();
+  bindCarrierRuleEvents();
+  bindDuplicateConfirmEvents();
+}
+
+// Chặn nhân viên tự ý vào trang Cài đặt — chỉ hỏi mật khẩu 1 lần/phiên trình duyệt
+function unlockSettingsPage() {
+  if (sessionStorage.getItem(SETTINGS_UNLOCK_SESSION_KEY) === "1") return true;
+  const input = prompt("🔒 Nhập mật khẩu để vào Cài đặt:");
+  if (input === null) return false;
+  if (input !== SETTINGS_PASSWORD) {
+    alert("❌ Sai mật khẩu!");
+    return false;
+  }
+  sessionStorage.setItem(SETTINGS_UNLOCK_SESSION_KEY, "1");
+  return true;
+}
+
+function bindCarrierRuleEvents() {
+  document.getElementById("addCarrierRuleBtn")?.addEventListener("click", () => {
+    const prefixInput = document.getElementById("newRulePrefix");
+    const carrierInput = document.getElementById("newRuleCarrier");
+    const prefix = (prefixInput.value || "").trim().toUpperCase();
+    const carrier = (carrierInput.value || "").trim();
+    if (!prefix || !carrier) return showSettingsMsg("⚠️ Vui lòng nhập đủ tiền tố và tên DVVC!", false);
+    if (DEFAULT_CARRIER_RULES.some(r => r.prefix === prefix) || customCarrierRules[prefix]) {
+      if (!confirm(`Tiền tố [${prefix}] đã tồn tại, ghi đè thành [${carrier}]?`)) return;
+    }
+    customCarrierRules[prefix] = carrier;
+    saveCarrierRules();
+    renderCarrierRulesTable();
+    syncCarrierSelectOptions();
+    syncCarrierFilterButtons();
+    prefixInput.value = "";
+    carrierInput.value = "";
+    showSettingsMsg(`✅ Đã thêm quy tắc: [${prefix}] → [${carrier}]`, true);
+  });
+
+  document.getElementById("carrierRulesBody")?.addEventListener("click", (e) => {
+    const btn = e.target.closest(".delete-carrier-rule-btn");
+    if (!btn) return;
+    const prefix = btn.dataset.prefix;
+    if (!confirm(`Xóa quy tắc tiền tố [${prefix}]?`)) return;
+    delete customCarrierRules[prefix];
+    saveCarrierRules();
+    renderCarrierRulesTable();
+    syncCarrierSelectOptions();
+    syncCarrierFilterButtons();
+    showSettingsMsg(`🗑 Đã xóa quy tắc [${prefix}]`, true);
+  });
 }
 
 // === 6. QUÉT MÃ ===
@@ -802,6 +906,8 @@ function renderAll() {
     renderCarrierTable(filteredOrders);
     renderChart(filteredOrders);
   }
+  if (activePage === "dupConfirmPage") renderDuplicateTodayPanel();
+  updateDupOrderBadges();
   renderTodayList(getTodayOrdersByStation(todayStr(), "1"), "todayScannedBody", "loadMoreTodayBtn", showAllTodayOrders, () => { showAllTodayOrders = true; });
   renderTodayList(getTodayOrdersByStation(todayStr(), "2"), "todayScannedBody2", "loadMoreTodayBtn2", showAllTodayOrders2, () => { showAllTodayOrders2 = true; });
   loadCancelledCount();
@@ -1082,21 +1188,34 @@ function appendHistoryRows() {
   }
 }
 
+const DEFAULT_CHART_CARRIERS = [
+  { key: "J&T", label: "J&T", color: "#22c55e" },
+  { key: "Shopee Express", label: "Shopee", color: "#3b82f6" },
+  { key: "GHN", label: "GHN", color: "#f59e0b" },
+  { key: "Viettel Post", label: "VTP", color: "#8b5cf6" },
+];
+const CUSTOM_CARRIER_PALETTE = ["#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16", "#06b6d4", "#a855f7", "#0ea5e9"];
+
 function renderChart(orders) {
   const successMap = groupByCarrier(orders.filter(o => o.status === STATUS.SUCCESS));
-  const labels = ["J&T", "Shopee", "GHN", "VTP", "Khác", "ĐƠN HỦY", "ĐƠN TRÙNG"];
+  const customCarriers = getCustomCarrierNames();
+  const customEntries = customCarriers.map((name, i) => ({ key: name, label: name, color: CUSTOM_CARRIER_PALETTE[i % CUSTOM_CARRIER_PALETTE.length] }));
+  const allEntries = [...DEFAULT_CHART_CARRIERS, ...customEntries];
+
+  const labels = [...allEntries.map(c => c.label), "Khác", "ĐƠN HỦY", "ĐƠN TRÙNG"];
   const data = [
-    (successMap["J&T"] || []).length, (successMap["Shopee Express"] || []).length,
-    (successMap["GHN"] || []).length, (successMap["Viettel Post"] || []).length,
+    ...allEntries.map(c => (successMap[c.key] || []).length),
     (successMap["Khac"] || []).length,
     orders.filter(o => o.status === STATUS.CANCELED).length,
     orders.filter(o => o.status === STATUS.DUPLICATE).length
   ];
+  const colors = [...allEntries.map(c => c.color), "#64748b", "#ef4444", "#eab308"];
+
   const ctx = document.getElementById("carrierChart");
   if (carrierChart) carrierChart.destroy();
   carrierChart = new Chart(ctx, {
     type: "bar",
-    data: { labels, datasets: [{ label: "Số lượng", data, backgroundColor: ["#22c55e", "#3b82f6", "#f59e0b", "#8b5cf6", "#64748b", "#ef4444", "#eab308"] }] },
+    data: { labels, datasets: [{ label: "Số lượng", data, backgroundColor: colors }] },
     options: { responsive: true, plugins: { legend: { display: false } } }
   });
 }
@@ -1209,16 +1328,108 @@ function getOrdersByFilter(filter) {
 
 function detectCarrier(code) {
   const upper = code.toUpperCase();
-  if (upper.startsWith("8")) return "J&T";
-  if (upper.startsWith("SPX")) return "Shopee Express";
-  if (upper.startsWith("G")) return "GHN";
-  if (upper.startsWith("VTP")) return "Viettel Post";
-  return "Khac";
+  // Rule tùy chỉnh đứng trước default trong mảng → cùng độ dài tiền tố thì rule tùy chỉnh thắng (sort ổn định)
+  const customRules = Object.entries(customCarrierRules).map(([prefix, carrier]) => ({ prefix: prefix.toUpperCase(), carrier }));
+  const allRules = [...customRules, ...DEFAULT_CARRIER_RULES].sort((a, b) => b.prefix.length - a.prefix.length);
+  const match = allRules.find(r => r.prefix && upper.startsWith(r.prefix));
+  return match ? match.carrier : "Khac";
+}
+
+// Tên DVVC tùy chỉnh (không trùng), dùng chung cho dropdown, biểu đồ, bảng tổng hợp, nút lọc
+function getCustomCarrierNames() {
+  return [...new Set(Object.values(customCarrierRules))];
+}
+
+function saveCarrierRules() {
+  localStorage.setItem(CARRIER_RULES_KEY, JSON.stringify(customCarrierRules));
+  set(ref(db, CARRIER_RULES_KEY), customCarrierRules).catch(err => console.error("Lỗi lưu quy tắc DVVC:", err));
+}
+
+function renderCarrierRulesTable() {
+  const body = document.getElementById("carrierRulesBody");
+  if (!body) return;
+  body.innerHTML = "";
+  const defaultRows = DEFAULT_CARRIER_RULES.map(r => ({ ...r, custom: false }));
+  const customRows = Object.entries(customCarrierRules)
+    .map(([prefix, carrier]) => ({ prefix, carrier, custom: true }))
+    .sort((a, b) => a.prefix.localeCompare(b.prefix));
+  [...customRows, ...defaultRows].forEach(r => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td><b>${escHtml(r.prefix)}</b></td><td>${escHtml(r.carrier)}</td><td>${r.custom ? "Tùy chỉnh" : "Mặc định"}</td>` +
+      `<td>${r.custom ? `<button class="danger delete-carrier-rule-btn" data-prefix="${escHtml(r.prefix)}" style="padding:6px 12px;font-size:13px;">🗑 Xóa</button>` : `<span class="muted">—</span>`}</td>`;
+    body.appendChild(tr);
+  });
+}
+
+function syncCarrierSelectOptions() {
+  const defaultCarriers = new Set(["Shopee Express", "J&T", "GHN", "Viettel Post", "Khac"]);
+  const customCarriers = getCustomCarrierNames();
+  ["batchCarrier", "batchCarrier2"].forEach(id => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const existing = new Set(Array.from(sel.options).map(o => o.value));
+    // Thêm carrier tùy chỉnh mới chưa có trong select
+    customCarriers.forEach(name => {
+      if (!existing.has(name)) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        const khacOpt = sel.querySelector('option[value="Khac"]');
+        if (khacOpt) sel.insertBefore(opt, khacOpt); else sel.appendChild(opt);
+      }
+    });
+    // Xóa carrier tùy chỉnh đã bị gỡ khỏi danh sách rule
+    Array.from(sel.options).forEach(o => {
+      if (!defaultCarriers.has(o.value) && !customCarriers.includes(o.value)) sel.removeChild(o);
+    });
+  });
+}
+
+// Thêm/gỡ nút lọc DVVC tùy chỉnh ở trang History (xe đã chốt + bàn giao) sao cho khớp customCarrierRules hiện tại
+function syncCarrierFilterButtons() {
+  const defaultCarriers = new Set(["J&T", "Shopee Express", "GHN", "Viettel Post"]);
+  const customCarriers = getCustomCarrierNames();
+  const configs = [
+    { containerId: "dvvcFilterBar", cls: "dvvc-filter-btn" },
+    { containerId: "hoFilterBar", cls: "ho-filter-btn" },
+  ];
+  configs.forEach(({ containerId, cls }) => {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    const existing = new Set(Array.from(container.querySelectorAll(`.${cls}`)).map(b => b.dataset.dvvc));
+    customCarriers.forEach(name => {
+      if (existing.has(name)) return;
+      const btn = document.createElement("button");
+      btn.className = cls;
+      btn.dataset.dvvc = name;
+      btn.textContent = name;
+      btn.style.cssText = "padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;";
+      container.appendChild(btn);
+    });
+    // Gỡ nút lọc của carrier tùy chỉnh đã bị xóa khỏi danh sách rule
+    Array.from(container.querySelectorAll(`.${cls}`)).forEach(btn => {
+      const dvvc = btn.dataset.dvvc;
+      if (dvvc === "all" || defaultCarriers.has(dvvc)) return;
+      if (!customCarriers.includes(dvvc)) btn.remove();
+    });
+  });
+}
+
+function showSettingsMsg(text, ok) {
+  const el = document.getElementById("settingsRuleMsg");
+  if (!el) return;
+  el.textContent = text;
+  el.style.background = ok ? "#dcfce7" : "#fee2e2";
+  el.style.color = ok ? "#166534" : "#dc2626";
+  el.style.display = "block";
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(() => { el.style.display = "none"; }, 3000);
 }
 
 function switchPage(pageId) {
   if (pageId !== "cancelScanPage" && isCameraRunning) stopCameraScanner();
   if (pageId !== "scanPage" && pageId !== "scanPage2" && isScanCameraRunning) stopScanPageCamera();
+  if (pageId !== "dupConfirmPage" && isDupCameraRunning) stopDupCameraScanner();
   activePage = pageId;
   document.querySelectorAll(".app-page").forEach(p => p.classList.toggle("active", p.id === pageId));
   document.querySelectorAll(".page-tab").forEach(t => t.classList.toggle("active", t.dataset.page === pageId));
@@ -1226,6 +1437,7 @@ function switchPage(pageId) {
   if (pageId === "scanPage2") setTimeout(() => document.getElementById("orderInput2")?.focus(), 0);
   if (pageId === "dashboardPage") { renderAll(); renderProductivitySection(); }
   if (pageId === "cancelScanPage") setTimeout(() => document.getElementById("cancelScanInput")?.focus(), 0);
+  if (pageId === "dupConfirmPage") { setTimeout(() => document.getElementById("dupConfirmInput")?.focus(), 0); refreshDuplicateTodayPanel(); }
 }
 
 function exportOrdersToExcel(data, fileName) {
@@ -1269,13 +1481,21 @@ const _BARCODE_KEY_MAP = (() => {
 function setupBarcodeInput(inputEl, onScan) {
   if (!inputEl) return;
   let buf = '';
+  let lastCode = '';
+  let lastTime = 0;
   inputEl.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.code === 'NumpadEnter') {
       e.preventDefault();
       const code = buf || normalizeBarcode(inputEl.value);
       buf = '';
       inputEl.value = '';
-      if (code) onScan(code);
+      if (!code) return;
+      // Máy quét nhạy bắn đúp cùng 1 mã trong tích tắc — bỏ qua lần bắn thứ 2, không tính là quét
+      const now = Date.now();
+      if (code === lastCode && now - lastTime < 2000) return;
+      lastCode = code;
+      lastTime = now;
+      onScan(code);
     } else if (e.code === 'Backspace') {
       buf = buf.slice(0, -1);
     } else if (_BARCODE_KEY_MAP[e.code] !== undefined) {
@@ -1366,7 +1586,7 @@ function speak(text) {
 
 function renderCarrierTable(orders) {
   const map = groupByCarrier(orders.filter(o => o.status === STATUS.SUCCESS));
-  const carriers = ["J&T", "Shopee Express", "GHN", "Viettel Post", "Khac"];
+  const carriers = ["J&T", "Shopee Express", "GHN", "Viettel Post", ...getCustomCarrierNames(), "Khac"];
   const body = document.getElementById("carrierTableBody");
   body.innerHTML = "";
   carriers.forEach(c => {
@@ -1673,6 +1893,256 @@ function bindCancelScanEvents() {
     }
     resultWrap.innerHTML = html;
   });
+}
+
+// === XÁC NHẬN ĐƠN TRÙNG CUỐI NGÀY ===
+// Lấy danh sách đơn TRÙNG của 1 ngày, gộp theo mã (1 mã có thể bị báo trùng nhiều lần trong ngày nhưng chỉ là 1 gói hàng vật lý)
+function getDuplicateOrdersForDate(date) {
+  const orders = (scanDataCache[date]?.orders || []).filter(o => o.status === STATUS.DUPLICATE);
+  const map = new Map();
+  orders.forEach(o => { if (!map.has(o.code)) map.set(o.code, o); });
+  return [...map.values()].sort((a, b) => (a.time < b.time ? 1 : -1));
+}
+
+async function ensureDuplicateConfirmLoaded(date) {
+  if (duplicateConfirmCache[date]) return;
+  try {
+    const snap = await get(ref(db, `${DUPLICATE_CONFIRM_KEY}/${date}`));
+    duplicateConfirmCache[date] = snap.exists() ? snap.val() : {};
+  } catch (e) {
+    duplicateConfirmCache[date] = duplicateConfirmCache[date] || {};
+  }
+}
+
+function renderDuplicateStatusRows(body, stats, date) {
+  const dupOrders = getDuplicateOrdersForDate(date);
+  const confirmedMap = duplicateConfirmCache[date] || {};
+  body.innerHTML = "";
+  if (dupOrders.length === 0) {
+    body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#94a3b8;">Không có đơn trùng trong ngày này</td></tr>`;
+  } else {
+    dupOrders.forEach(o => {
+      const confirmed = !!confirmedMap[o.code];
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${formatTime(o.time)}</td><td><b>${escHtml(o.code)}</b></td><td>${escHtml(o.carrier)}</td><td>${escHtml(o.batchId || '-')}</td>` +
+        `<td>${confirmed ? '<span style="color:#10b981;font-weight:bold;">✅ Đã xác nhận</span>' : '<span style="color:#f59e0b;font-weight:bold;">⏳ Chưa xác nhận</span>'}</td>`;
+      body.appendChild(tr);
+    });
+  }
+  const confirmedCount = dupOrders.filter(o => confirmedMap[o.code]).length;
+  if (stats?.totalEl) stats.totalEl.textContent = dupOrders.length;
+  if (stats?.confirmedEl) stats.confirmedEl.textContent = confirmedCount;
+  if (stats?.pendingEl) stats.pendingEl.textContent = dupOrders.length - confirmedCount;
+  return dupOrders;
+}
+
+function renderDuplicateTodayPanel() {
+  const body = document.getElementById("dupConfirmTodayBody");
+  if (!body) return;
+  renderDuplicateStatusRows(body, {
+    totalEl: document.getElementById("dupStatTotal"),
+    confirmedEl: document.getElementById("dupStatConfirmed"),
+    pendingEl: document.getElementById("dupStatPending"),
+  }, todayStr());
+  updateDupOrderBadges();
+  updateDupCamCount();
+}
+
+function refreshDuplicateTodayPanel() {
+  ensureDuplicateConfirmLoaded(todayStr()).then(renderDuplicateTodayPanel);
+  renderDuplicateTodayPanel();
+}
+
+// Cập nhật ô "Đơn trùng hôm nay" ở trang Quét đơn 1 & 2 — dùng chung 1 số liệu tổng, không tách theo bàn
+function updateDupOrderBadges() {
+  const dupOrders = getDuplicateOrdersForDate(todayStr());
+  const confirmedMap = duplicateConfirmCache[todayStr()] || {};
+  const total = dupOrders.length;
+  const confirmed = dupOrders.filter(o => confirmedMap[o.code]).length;
+  const pending = total - confirmed;
+  ["1", "2"].forEach(s => {
+    const totalEl = document.getElementById(`dupBadgeTotal${s}`);
+    const confirmedEl = document.getElementById(`dupBadgeConfirmed${s}`);
+    const pendingEl = document.getElementById(`dupBadgePending${s}`);
+    if (totalEl) totalEl.textContent = total;
+    if (confirmedEl) confirmedEl.textContent = confirmed;
+    if (pendingEl) pendingEl.textContent = pending;
+  });
+}
+
+function showDupConfirmMsg(text, color) {
+  const el = document.getElementById("dupConfirmMessage");
+  if (el) {
+    el.style.display = "block";
+    el.style.background = color + "20";
+    el.style.color = color;
+    el.style.border = `1px solid ${color}`;
+    el.textContent = text;
+  }
+  const camMsg = document.getElementById("dupCamMsgEl");
+  if (camMsg) {
+    camMsg.style.display = "block";
+    camMsg.style.background = color + "20";
+    camMsg.style.color = color;
+    camMsg.style.whiteSpace = "pre-line";
+    camMsg.style.fontSize = "20px";
+    camMsg.style.padding = "14px 16px";
+    camMsg.textContent = text;
+  }
+}
+
+function updateDupCamCount() {
+  const el = document.getElementById("dupCamScanCount");
+  if (!el) return;
+  const dupOrders = getDuplicateOrdersForDate(todayStr());
+  const confirmedMap = duplicateConfirmCache[todayStr()] || {};
+  const confirmed = dupOrders.filter(o => confirmedMap[o.code]).length;
+  el.textContent = `${confirmed}/${dupOrders.length}`;
+}
+
+function startDupCameraScanner() {
+  if (isDupCameraRunning) return;
+  if (typeof Html5Qrcode === "undefined") { alert("Thư viện camera chưa tải, vui lòng thử lại!"); return; }
+
+  const modal = document.createElement("div");
+  modal.id = "dupCameraModal";
+  modal.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:9999;display:flex;flex-direction:column;";
+  modal.innerHTML = `
+    <div style="background:#d97706;color:white;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0;">
+      <span style="font-weight:bold;font-size:17px;">📷 Quét Xác Nhận Đơn Trùng</span>
+      <span id="dupCamScanCount" style="background:rgba(0,0,0,0.4);padding:4px 14px;border-radius:20px;font-size:15px;font-weight:bold;">0/0</span>
+    </div>
+    <div id="dupCameraModalReader" style="flex:1;position:relative;background:#000;overflow:hidden;"></div>
+    <div id="dupCamMsgEl" style="display:none;padding:10px 16px;font-weight:bold;font-size:15px;text-align:center;flex-shrink:0;"></div>
+    <div style="background:#0f172a;padding:12px 16px;flex-shrink:0;">
+      <button id="dupCamStopBtn" style="background:#f59e0b;color:white;font-weight:bold;padding:14px;border:none;border-radius:10px;font-size:16px;width:100%;cursor:pointer;">⏹ Dừng Camera</button>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  updateDupCamCount();
+  ensureAudioContext();
+
+  document.getElementById("dupCamStopBtn").addEventListener("click", stopDupCameraScanner);
+
+  const readerEl = document.getElementById("dupCameraModalReader");
+  const videoObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeName === "VIDEO") {
+          node.setAttribute("playsinline", "");
+          node.setAttribute("webkit-playsinline", "");
+          node.setAttribute("x-webkit-airplay", "deny");
+          node.disablePictureInPicture = true;
+          videoObserver.disconnect();
+        }
+      }
+    }
+  });
+  videoObserver.observe(readerEl, { childList: true, subtree: true });
+
+  html5QrScannerDup = new Html5Qrcode("dupCameraModalReader", {
+    formatsToSupport: [0, 3, 5, 9, 10],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+  });
+  html5QrScannerDup.start(
+    { facingMode: "environment" },
+    { fps: 25, qrbox: (w, h) => ({ width: Math.floor(w * 0.9), height: Math.floor(h * 0.5) }), videoConstraints: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } } },
+    (decodedText) => {
+      const now = Date.now();
+      if (decodedText === lastDupCamCode && now - lastDupCamTime < 2000) return;
+      lastDupCamCode = decodedText;
+      lastDupCamTime = now;
+      handleDuplicateConfirmScan(decodedText.trim());
+    },
+    () => {}
+  ).then(() => {
+    isDupCameraRunning = true;
+    document.getElementById("startDupCameraBtn").style.display = "none";
+    const overlay = document.createElement("div");
+    overlay.id = "scanLineOverlay";
+    overlay.className = "scan-line-overlay";
+    overlay.innerHTML = '<div class="scan-line"></div>';
+    readerEl.appendChild(overlay);
+  }).catch(err => {
+    document.getElementById("dupCameraModal")?.remove();
+    alert("Không thể bật camera: " + err);
+  });
+}
+
+function stopDupCameraScanner() {
+  const cleanup = () => {
+    isDupCameraRunning = false;
+    html5QrScannerDup = null;
+    document.getElementById("dupCameraModal")?.remove();
+    const s = document.getElementById("startDupCameraBtn");
+    if (s) s.style.display = "inline-block";
+  };
+  if (!html5QrScannerDup) { cleanup(); return; }
+  html5QrScannerDup.stop().then(cleanup).catch(cleanup);
+}
+
+async function handleDuplicateConfirmScan(code) {
+  if (!code) return;
+  const today = todayStr();
+  await ensureDuplicateConfirmLoaded(today);
+  const dupOrders = getDuplicateOrdersForDate(today);
+  const match = dupOrders.find(o => o.code === code);
+  if (!match) {
+    showDupConfirmMsg(`❌ Mã ${code} không nằm trong danh sách đơn trùng hôm nay!`, "#ef4444");
+    playTone("error", "Không phải đơn trùng");
+    return;
+  }
+  if (duplicateConfirmCache[today]?.[code]) {
+    showDupConfirmMsg(`⚠️ Mã ${code} đã xác nhận rồi!`, "#f59e0b");
+    playTone("warning");
+    return;
+  }
+  const entry = { code, carrier: match.carrier, batchId: match.batchId || "-", originalTime: match.time, confirmedAt: new Date().toISOString() };
+  if (!duplicateConfirmCache[today]) duplicateConfirmCache[today] = {};
+  duplicateConfirmCache[today][code] = entry;
+  renderDuplicateTodayPanel();
+  showDupConfirmMsg(`✅ Đã xác nhận: ${code}`, "#10b981");
+  playTone("success");
+  try {
+    await set(ref(db, `${DUPLICATE_CONFIRM_KEY}/${today}/${code}`), entry);
+  } catch (e) {
+    showDupConfirmMsg("❌ Lỗi lưu Firebase, vui lòng quét lại!", "#ef4444");
+  }
+}
+
+async function loadDuplicateConfirmHistory(date) {
+  const body = document.getElementById("dupConfirmHistoryBody");
+  const exportBtn = document.getElementById("exportDupConfirmBtn");
+  if (!body) return;
+  body.innerHTML = `<tr><td colspan="5" style="text-align:center;color:#94a3b8;">⏳ Đang tải...</td></tr>`;
+  await ensureDatesInCache(date, date);
+  await ensureDuplicateConfirmLoaded(date);
+  const dupOrders = renderDuplicateStatusRows(body, {
+    totalEl: document.getElementById("dupHistStatTotal"),
+    confirmedEl: document.getElementById("dupHistStatConfirmed"),
+    pendingEl: document.getElementById("dupHistStatPending"),
+  }, date);
+  if (exportBtn) {
+    exportBtn.style.display = dupOrders.length > 0 ? "inline-block" : "none";
+    exportBtn.onclick = () => {
+      const confirmedMap = duplicateConfirmCache[date] || {};
+      exportOrdersToExcel(dupOrders.map(o => ({
+        "Mã đơn": o.code, "Thời gian quét trùng": formatTime(o.time), "DVVC": o.carrier, "Lô/Xe": o.batchId || "-",
+        "Trạng thái": confirmedMap[o.code] ? "Đã xác nhận" : "Chưa xác nhận"
+      })), `don_trung_${date}.xlsx`);
+    };
+  }
+}
+
+function bindDuplicateConfirmEvents() {
+  setupBarcodeInput(document.getElementById("dupConfirmInput"), handleDuplicateConfirmScan);
+  document.getElementById("dupConfirmHistoryDateBtn")?.addEventListener("click", () => {
+    const date = document.getElementById("dupConfirmHistoryDate")?.value;
+    if (date) loadDuplicateConfirmHistory(date);
+  });
+  document.getElementById("dupBadgeCard1")?.addEventListener("click", () => switchPage("dupConfirmPage"));
+  document.getElementById("dupBadgeCard2")?.addEventListener("click", () => switchPage("dupConfirmPage"));
+  document.getElementById("startDupCameraBtn")?.addEventListener("click", startDupCameraScanner);
 }
 
 function updateCamCount() {

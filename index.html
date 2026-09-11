@@ -24,6 +24,8 @@
       <button class="page-tab" data-page="cancelledPage">Đơn hủy</button>
       <button class="page-tab" data-page="historyPage">History</button>
       <button class="page-tab" data-page="cancelScanPage" style="background:#ef4444;">Tra Đơn Hủy</button>
+      <button class="page-tab" data-page="dupConfirmPage" style="background:#f59e0b;">🔁 Đơn Trùng</button>
+      <button class="page-tab" data-page="settingsPage">⚙️ Cài đặt</button>
     </nav>
 
     <section id="scanPage" class="app-page active">
@@ -71,6 +73,12 @@
                   </tbody>
               </table>
             </div>
+          </section>
+
+          <section class="card" id="dupBadgeCard1" style="border-top:4px solid #f59e0b;margin-top:14px;padding:14px;text-align:center;cursor:pointer;">
+            <div style="font-size:13px;color:#92400e;font-weight:700;">🔁 ĐƠN TRÙNG HÔM NAY</div>
+            <div style="font-size:32px;font-weight:800;color:#d97706;" id="dupBadgeTotal1">0</div>
+            <div style="font-size:12px;color:#64748b;">✅ <span id="dupBadgeConfirmed1">0</span> đã xác nhận &nbsp;|&nbsp; ⏳ <span id="dupBadgePending1">0</span> chưa xác nhận</div>
           </section>
         </div>
 
@@ -126,6 +134,12 @@
                 <tbody id="activeBatchesBody2"></tbody>
               </table>
             </div>
+          </section>
+
+          <section class="card" id="dupBadgeCard2" style="border-top:4px solid #f59e0b;margin-top:14px;padding:14px;text-align:center;cursor:pointer;">
+            <div style="font-size:13px;color:#92400e;font-weight:700;">🔁 ĐƠN TRÙNG HÔM NAY</div>
+            <div style="font-size:32px;font-weight:800;color:#d97706;" id="dupBadgeTotal2">0</div>
+            <div style="font-size:12px;color:#64748b;">✅ <span id="dupBadgeConfirmed2">0</span> đã xác nhận &nbsp;|&nbsp; ⏳ <span id="dupBadgePending2">0</span> chưa xác nhận</div>
           </section>
         </div>
         <div class="scan-right" style="display: flex; flex-direction: column; gap: 16px;">
@@ -362,7 +376,7 @@ G12345678"></textarea>
         <section class="card batch-history-card" style="margin-bottom: 20px; border-left: 5px solid #10b981;">
           <h2 style="color: #10b981; margin-top: 0;">📦 Lịch Sử Xe Đã Chốt</h2>
           <p class="muted" style="margin-top: -10px;">Chọn ngày ở Lịch phía trên để xem và tải các xe đã chốt.</p>
-          <div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <div id="dvvcFilterBar" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
             <span style="font-size:13px;color:#64748b;font-weight:600;">Lọc DVVC:</span>
             <button class="dvvc-filter-btn active" data-dvvc="all" style="padding:4px 12px;border-radius:20px;border:1.5px solid #10b981;background:#10b981;color:#fff;cursor:pointer;font-size:13px;">Tất cả</button>
             <button class="dvvc-filter-btn" data-dvvc="J&T" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">J&T</button>
@@ -396,7 +410,7 @@ G12345678"></textarea>
             <input id="handoverDatePicker" type="date" style="max-width:200px;">
             <button id="handoverDateLoadBtn" style="background:#d97706;color:white;border:none;border-radius:6px;padding:6px 16px;font-weight:bold;cursor:pointer;">📋 Xem</button>
           </div>
-          <div style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+          <div id="hoFilterBar" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
             <span style="font-size:13px;color:#64748b;font-weight:600;">Lọc DVVC:</span>
             <button class="ho-filter-btn active" data-dvvc="all" style="padding:4px 12px;border-radius:20px;border:1.5px solid #d97706;background:#d97706;color:#fff;cursor:pointer;font-size:13px;">Tất cả</button>
             <button class="ho-filter-btn" data-dvvc="J&T" style="padding:4px 12px;border-radius:20px;border:1.5px solid #94a3b8;background:#fff;color:#374151;cursor:pointer;font-size:13px;">J&T</button>
@@ -524,6 +538,130 @@ G12345678"></textarea>
             <tbody id="cancelReturnBody">
               <tr><td colspan="5" style="text-align:center;">Vui lòng chọn ngày để xem</td></tr>
             </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="dupConfirmPage" class="app-page">
+      <section class="card" style="border-top:5px solid #f59e0b;">
+        <h2 style="color:#d97706;margin-top:0;">🔁 Xác Nhận Đơn Trùng Hôm Nay</h2>
+        <p style="color:#64748b;font-size:14px;margin-bottom:16px;">Đơn bị báo TRÙNG khi quét phải giữ lại gói hàng. Cuối ngày, quét lại từng đơn đang giữ ở đây để xác nhận đã đối chiếu đầy đủ.</p>
+
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <input id="dupConfirmInput" type="text" placeholder="Quét mã đơn trùng để xác nhận → Enter"
+            autocomplete="off" style="flex:1;padding:12px;font-size:16px;">
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <button id="startDupCameraBtn" style="background:#3b82f6;color:white;padding:10px 18px;border:none;border-radius:6px;cursor:pointer;">📷 Bật Camera Quét</button>
+        </div>
+
+        <div id="dupConfirmMessage" style="display:none;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-weight:bold;font-size:15px;white-space:pre-line;"></div>
+
+        <div class="metrics" style="grid-template-columns:repeat(3,minmax(120px,1fr));">
+          <div class="metric" style="border-color:#fde68a;">
+            <span class="label">Tổng đơn trùng</span>
+            <strong id="dupStatTotal" style="color:#d97706;">0</strong>
+          </div>
+          <div class="metric" style="border-color:#bbf7d0;">
+            <span class="label">Đã xác nhận</span>
+            <strong id="dupStatConfirmed" style="color:#16a34a;">0</strong>
+          </div>
+          <div class="metric" style="border-color:#fecaca;">
+            <span class="label">Chưa xác nhận</span>
+            <strong id="dupStatPending" style="color:#dc2626;">0</strong>
+          </div>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table style="font-size:14px;">
+            <thead>
+              <tr>
+                <th>Thời gian trùng</th>
+                <th>Mã đơn</th>
+                <th>DVVC</th>
+                <th>Lô/Xe</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="dupConfirmTodayBody">
+              <tr><td colspan="5" style="text-align:center;color:#94a3b8;">Chưa có đơn trùng nào hôm nay</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <hr style="margin:24px 0;border-color:#fde68a;">
+
+        <h2 style="color:#d97706;margin-top:0;">📋 Lịch Sử Xác Nhận Đơn Trùng</h2>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap;">
+          <label style="font-weight:bold;color:#d97706;">📅 Chọn ngày xem:</label>
+          <input id="dupConfirmHistoryDate" type="date" style="padding:8px;font-size:15px;">
+          <button id="dupConfirmHistoryDateBtn" style="background:#d97706;color:white;border:none;border-radius:6px;padding:8px 16px;font-weight:bold;cursor:pointer;">📂 Xem</button>
+          <button id="exportDupConfirmBtn" style="display:none;background:#10b981;color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;">📥 Tải Excel</button>
+        </div>
+        <div class="metrics" style="grid-template-columns:repeat(3,minmax(120px,1fr));">
+          <div class="metric" style="border-color:#fde68a;">
+            <span class="label">Tổng đơn trùng</span>
+            <strong id="dupHistStatTotal" style="color:#d97706;">0</strong>
+          </div>
+          <div class="metric" style="border-color:#bbf7d0;">
+            <span class="label">Đã xác nhận</span>
+            <strong id="dupHistStatConfirmed" style="color:#16a34a;">0</strong>
+          </div>
+          <div class="metric" style="border-color:#fecaca;">
+            <span class="label">Chưa xác nhận</span>
+            <strong id="dupHistStatPending" style="color:#dc2626;">0</strong>
+          </div>
+        </div>
+        <div style="overflow-x:auto;">
+          <table style="font-size:14px;">
+            <thead>
+              <tr>
+                <th>Thời gian trùng</th>
+                <th>Mã đơn</th>
+                <th>DVVC</th>
+                <th>Lô/Xe</th>
+                <th>Trạng thái</th>
+              </tr>
+            </thead>
+            <tbody id="dupConfirmHistoryBody">
+              <tr><td colspan="5" style="text-align:center;color:#94a3b8;">Chọn ngày để xem</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <section id="settingsPage" class="app-page">
+      <section class="card" style="border-top:5px solid #6366f1;">
+        <h2 style="color:#6366f1;margin-top:0;">⚙️ Cài Đặt Nhận Diện DVVC</h2>
+        <p class="muted">Thêm quy tắc nhận diện đơn vị vận chuyển (DVVC) theo tiền tố mã vận đơn. Ví dụ: mã bắt đầu bằng <b>58</b> sẽ được nhận là DVVC <b>Cago</b>. Quy tắc tiền tố dài hơn được ưu tiên kiểm tra trước.</p>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin:16px 0;">
+          <div>
+            <label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;">Tiền tố mã</label>
+            <input id="newRulePrefix" type="text" placeholder="VD: 58" style="width:140px;padding:10px;font-size:15px;">
+          </div>
+          <div>
+            <label style="display:block;font-weight:600;margin-bottom:4px;font-size:14px;">Tên DVVC</label>
+            <input id="newRuleCarrier" type="text" placeholder="VD: Cago" style="width:200px;padding:10px;font-size:15px;">
+          </div>
+          <button id="addCarrierRuleBtn" style="background:#6366f1;color:#fff;border:none;padding:11px 20px;border-radius:6px;cursor:pointer;font-weight:bold;">➕ Thêm quy tắc</button>
+        </div>
+        <div id="settingsRuleMsg" style="display:none;padding:10px 14px;border-radius:6px;margin-bottom:12px;font-weight:bold;font-size:14px;"></div>
+
+        <div style="overflow-x:auto;">
+          <table>
+            <thead>
+              <tr>
+                <th>Tiền tố</th>
+                <th>DVVC</th>
+                <th>Loại</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody id="carrierRulesBody"></tbody>
           </table>
         </div>
       </section>
