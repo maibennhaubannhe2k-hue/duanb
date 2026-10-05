@@ -785,14 +785,17 @@ function handleScan(code, station = "1") {
   }
 
   if (!canceledSet.has(code) && !activeBatch) {
-    showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}]`, "error", station);
+    showMessage(`❌ CHƯA TẠO XE CHO [${carrier.toUpperCase()}] — Mã: ${code}`, "error", station);
     playTone("error", `Chưa tạo xe ${carrier}`);
     const inputEl = station === "2" ? document.getElementById("orderInput2") : orderInput;
     if (inputEl) { inputEl.disabled = true; inputEl.value = ""; }
     const modal = document.getElementById("noCarrierModal");
     if (modal) {
       const detail = document.getElementById("noCarrierDetail");
-      if (detail) detail.textContent = `Vui lòng tạo xe cho [${carrier.toUpperCase()}] trước khi quét tiếp!`;
+      if (detail) {
+        detail.style.whiteSpace = "pre-line";
+        detail.textContent = `Mã vừa quét: ${code}\nVui lòng tạo xe cho [${carrier.toUpperCase()}] trước khi quét tiếp!`;
+      }
       modal.style.display = "flex";
       document.getElementById("noCarrierBtn").onclick = () => {
         modal.style.display = "none";
@@ -1484,9 +1487,14 @@ function setupBarcodeInput(inputEl, onScan) {
   let lastCode = '';
   let lastTime = 0;
   inputEl.addEventListener('keydown', e => {
+    // Bỏ qua tổ hợp phím (Ctrl/Alt/Meta) như Ctrl+V dán, Ctrl+A chọn... — tránh ghi nhầm phím ký tự (vd "V") vào buf
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === 'Enter' || e.code === 'NumpadEnter') {
       e.preventDefault();
-      const code = buf || normalizeBarcode(inputEl.value);
+      // buf có thể bị mất ký tự giữa chừng nếu ô nhập mất focus tạm thời khi đang gõ (vd thanh thông báo trình duyệt hiện lên)
+      // → luôn lấy chuỗi DÀI HƠN giữa buf (chống nhiễu Unikey) và giá trị thật trong ô nhập, để không bao giờ bị thiếu ký tự
+      const fromValue = normalizeBarcode(inputEl.value);
+      const code = buf.length >= fromValue.length ? buf : fromValue;
       buf = '';
       inputEl.value = '';
       if (!code) return;
@@ -1505,6 +1513,8 @@ function setupBarcodeInput(inputEl, onScan) {
   // Clear buffer khi blur (mất focus) hoặc focus (re-enable sau trùng đơn)
   inputEl.addEventListener('blur', () => { buf = ''; });
   inputEl.addEventListener('focus', () => { buf = ''; });
+  // Dán đè (chọn hết rồi Ctrl+V mã khác) phải luôn lấy đúng nội dung vừa dán — xóa buf cũ để khỏi bị buf dài hơn ghi đè nhầm
+  inputEl.addEventListener('paste', () => { buf = ''; });
 }
 function showMessage(text, type, station = "1") {
   const msgEl = station === "2" ? document.getElementById("scanMessage2") : scanMessage;
